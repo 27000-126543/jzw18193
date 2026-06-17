@@ -1,6 +1,7 @@
 import { useState, useMemo, useCallback } from 'react';
 import { useShallow } from 'zustand/shallow';
 import { motion } from 'framer-motion';
+import { useNavigate } from 'react-router-dom';
 import { useAppStore } from '@/store/useAppStore';
 import { formatNumber, formatPercent, formatMoney } from '@/utils';
 import Card from '@/components/ui/Card';
@@ -19,6 +20,8 @@ import {
   Clock,
   CheckCircle2,
   XCircle,
+  ArrowRight,
+  Wallet,
 } from 'lucide-react';
 import {
   BarChart,
@@ -32,9 +35,11 @@ import {
 } from 'recharts';
 
 export default function Reports() {
-  const { performanceData, fetchPerformanceData } = useAppStore(useShallow((state) => ({
+  const navigate = useNavigate();
+  const { performanceData, fetchPerformanceData, getPaymentsByInvitationId } = useAppStore(useShallow((state) => ({
     performanceData: state.performanceData,
     fetchPerformanceData: state.fetchPerformanceData,
+    getPaymentsByInvitationId: state.getPaymentsByInvitationId,
   })));
   const [selectedPeriod, setSelectedPeriod] = useState<'7d' | '30d' | '90d'>('30d');
   const [fetchingId, setFetchingId] = useState<string | null>(null);
@@ -82,6 +87,21 @@ export default function Reports() {
   const dataSourceText = fetchedCount > 0
     ? `已抓取 ${fetchedCount} 条实时数据`
     : '待发布后抓取实时数据';
+
+  const getKpiStatus = (perf: typeof performanceData[0]) => {
+    const hasFetched = !!perf.lastFetchedAt;
+    if (!hasFetched) return 'pending';
+    const impressionRate = perf.targetImpressions ? perf.impressions / perf.targetImpressions : 0;
+    const engagementRate = perf.targetEngagements ? perf.engagements / perf.targetEngagements : 0;
+    const clickRate = perf.targetClicks ? perf.clicks / perf.targetClicks : 0;
+    if (impressionRate >= 1 && engagementRate >= 1 && clickRate >= 1) return 'met';
+    return 'not_met';
+  };
+
+  const hasFinalPending = (invitationId: string) => {
+    const payments = getPaymentsByInvitationId(invitationId);
+    return payments.some(p => p.type === 'final' && p.status === 'pending');
+  };
 
   return (
     <div className="space-y-6">
@@ -257,6 +277,11 @@ export default function Reports() {
             const engagementRate = hasFetched && perf.targetEngagements
               ? perf.engagements / perf.targetEngagements
               : 0;
+            const clickRate = hasFetched && perf.targetClicks
+              ? perf.clicks / perf.targetClicks
+              : 0;
+            const kpiStatus = getKpiStatus(perf);
+            const allMet = kpiStatus === 'met';
 
             return (
               <motion.div
@@ -271,40 +296,93 @@ export default function Reports() {
                     <span className="text-sm font-medium text-gray-800 truncate">
                       {perf.kolName}
                     </span>
-                    {!hasFetched && (
-                      <span className="text-xs text-gray-400 flex items-center gap-1">
-                        <Clock className="w-3 h-3" />
-                        待发布后抓取
+                    {kpiStatus === 'met' && (
+                      <span className="text-xs inline-flex items-center gap-1 px-2 py-0.5 rounded bg-success-100 text-success-700 font-medium">
+                        🟢 KPI全达标
+                      </span>
+                    )}
+                    {kpiStatus === 'not_met' && (
+                      <span className="text-xs inline-flex items-center gap-1 px-2 py-0.5 rounded bg-danger-100 text-danger-700 font-medium">
+                        🔴 KPI未达标
+                      </span>
+                    )}
+                    {kpiStatus === 'pending' && (
+                      <span className="text-xs inline-flex items-center gap-1 px-2 py-0.5 rounded bg-gray-100 text-gray-500 font-medium">
+                        ⚪ 待抓取
                       </span>
                     )}
                   </div>
-                  <span
-                    className={`text-sm font-bold ${
-                      !hasFetched
-                        ? 'text-gray-400'
-                        : impressionRate >= 1
-                        ? 'text-success-600'
-                        : 'text-accent-600'
-                    }`}
-                  >
-                    {(impressionRate * 100).toFixed(0)}%
-                  </span>
                 </div>
-                <div className="progress-bar mb-1">
-                  <div
-                    className={`progress-fill ${
-                      !hasFetched
-                        ? 'bg-gray-300'
-                        : impressionRate >= 1
-                        ? 'bg-gradient-to-r from-success-400 to-success-600'
-                        : 'bg-gradient-to-r from-accent-400 to-accent-600'
-                    }`}
-                    style={{ width: `${Math.min(impressionRate * 100, 100)}%` }}
-                  />
-                </div>
-                <div className="flex justify-between text-xs text-gray-500">
-                  <span>曝光 {formatNumber(perf.impressions)}</span>
-                  <span>目标 {formatNumber(perf.targetImpressions || 0)}</span>
+
+                <div className="space-y-2">
+                  <div>
+                    <div className="flex items-center justify-between mb-1">
+                      <span className="text-xs text-gray-500 flex items-center gap-1">
+                        <Eye className="w-3 h-3" /> 曝光
+                      </span>
+                      <span className={`text-xs font-bold ${
+                        !hasFetched ? 'text-gray-400' : impressionRate >= 1 ? 'text-success-600' : 'text-accent-600'
+                      }`}>
+                        {(impressionRate * 100).toFixed(0)}%
+                      </span>
+                    </div>
+                    <div className="progress-bar">
+                      <div
+                        className={`progress-fill ${
+                          !hasFetched ? 'bg-gray-300' : impressionRate >= 1
+                            ? 'bg-gradient-to-r from-success-400 to-success-600'
+                            : 'bg-gradient-to-r from-accent-400 to-accent-600'
+                        }`}
+                        style={{ width: `${Math.min(impressionRate * 100, 100)}%` }}
+                      />
+                    </div>
+                  </div>
+
+                  <div>
+                    <div className="flex items-center justify-between mb-1">
+                      <span className="text-xs text-gray-500 flex items-center gap-1">
+                        <Heart className="w-3 h-3" /> 互动
+                      </span>
+                      <span className={`text-xs font-bold ${
+                        !hasFetched ? 'text-gray-400' : engagementRate >= 1 ? 'text-success-600' : 'text-accent-600'
+                      }`}>
+                        {(engagementRate * 100).toFixed(0)}%
+                      </span>
+                    </div>
+                    <div className="progress-bar">
+                      <div
+                        className={`progress-fill ${
+                          !hasFetched ? 'bg-gray-300' : engagementRate >= 1
+                            ? 'bg-gradient-to-r from-success-400 to-success-600'
+                            : 'bg-gradient-to-r from-accent-400 to-accent-600'
+                        }`}
+                        style={{ width: `${Math.min(engagementRate * 100, 100)}%` }}
+                      />
+                    </div>
+                  </div>
+
+                  <div>
+                    <div className="flex items-center justify-between mb-1">
+                      <span className="text-xs text-gray-500 flex items-center gap-1">
+                        <MousePointerClick className="w-3 h-3" /> 点击
+                      </span>
+                      <span className={`text-xs font-bold ${
+                        !hasFetched ? 'text-gray-400' : clickRate >= 1 ? 'text-success-600' : 'text-accent-600'
+                      }`}>
+                        {(clickRate * 100).toFixed(0)}%
+                      </span>
+                    </div>
+                    <div className="progress-bar">
+                      <div
+                        className={`progress-fill ${
+                          !hasFetched ? 'bg-gray-300' : clickRate >= 1
+                            ? 'bg-gradient-to-r from-success-400 to-success-600'
+                            : 'bg-gradient-to-r from-accent-400 to-accent-600'
+                        }`}
+                        style={{ width: `${Math.min(clickRate * 100, 100)}%` }}
+                      />
+                    </div>
+                  </div>
                 </div>
               </motion.div>
             );
@@ -360,6 +438,17 @@ export default function Reports() {
               {performanceData.slice(0, 8).map((perf, index) => {
                 const isFetching = perf.fetchStatus === 'fetching' || fetchingId === perf.contentId;
                 const isFetched = perf.fetchStatus === 'success' || !!perf.lastFetchedAt;
+                const kpiStatus = getKpiStatus(perf);
+                const finalPending = hasFinalPending(perf.contentId);
+                const canGoFinance = kpiStatus === 'met' && finalPending;
+                const financeTooltip = kpiStatus === 'pending'
+                  ? '请先抓取数据'
+                  : kpiStatus === 'not_met'
+                  ? 'KPI未达标'
+                  : !finalPending
+                  ? '尾款已处理'
+                  : '';
+
                 return (
                   <motion.tr
                     key={perf.id}
@@ -424,15 +513,31 @@ export default function Reports() {
                         {perf.roi.toFixed(2)}x
                       </span>
                     </td>
-                    <td className="py-4 px-4 text-center">
-                      <button
-                        onClick={() => handleFetchData(perf.contentId)}
-                        disabled={fetchingId === perf.contentId}
-                        className="text-primary-600 hover:text-primary-700 disabled:text-gray-400 disabled:cursor-not-allowed text-sm font-medium flex items-center gap-1 mx-auto"
-                      >
-                        <RefreshCw className={`w-4 h-4 ${fetchingId === perf.contentId ? 'animate-spin' : ''}`} />
-                        {isFetched ? '重新抓取' : '抓取数据'}
-                      </button>
+                    <td className="py-4 px-4">
+                      <div className="flex items-center justify-center gap-2">
+                        <button
+                          onClick={() => handleFetchData(perf.contentId)}
+                          disabled={fetchingId === perf.contentId}
+                          className="text-primary-600 hover:text-primary-700 disabled:text-gray-400 disabled:cursor-not-allowed text-sm font-medium flex items-center gap-1"
+                        >
+                          <RefreshCw className={`w-4 h-4 ${fetchingId === perf.contentId ? 'animate-spin' : ''}`} />
+                          {isFetched ? '重新抓取' : '抓取数据'}
+                        </button>
+                        <button
+                          onClick={() => navigate('/finance')}
+                          disabled={!canGoFinance}
+                          title={financeTooltip || undefined}
+                          className={`text-sm font-medium flex items-center gap-1 ${
+                            canGoFinance
+                              ? 'text-success-600 hover:text-success-700'
+                              : 'text-gray-400 cursor-not-allowed'
+                          }`}
+                        >
+                          <Wallet className="w-4 h-4" />
+                          <ArrowRight className="w-4 h-4" />
+                          {canGoFinance ? '去处理尾款' : '处理尾款'}
+                        </button>
+                      </div>
                     </td>
                   </motion.tr>
                 );

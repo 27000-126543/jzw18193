@@ -5,6 +5,8 @@ export type InvitationStatus = 'pending' | 'accepted' | 'rejected' | 'negotiatin
 export type ReviewStatus = 'pending' | 'approved' | 'rejected';
 export type PaymentStatus = 'pending' | 'paid' | 'overdue';
 export type PaymentType = 'deposit' | 'final';
+export type ContractStatus = 'unsigned' | 'signed' | 'archived';
+export type InvoiceStatus = 'pending' | 'issued' | 'received';
 
 export interface KOL {
   id: string;
@@ -151,4 +153,43 @@ export interface FilterOptions {
   priceMin?: number;
   priceMax?: number;
   search?: string;
+}
+
+export interface Contract {
+  id: string;
+  invitationId: string;
+  kolName?: string;
+  campaignName?: string;
+  status: ContractStatus;
+  fee: number;
+  signedAt?: string;
+  createdAt: string;
+}
+
+export interface Invoice {
+  id: string;
+  paymentId: string;
+  invitationId: string;
+  kolName?: string;
+  campaignName?: string;
+  type: PaymentType;
+  amount: number;
+  status: InvoiceStatus;
+  issuedAt?: string;
+  createdAt: string;
+}
+
+export interface CollaborationPayment {
+  invitationId: string;
+  kolName?: string;
+  campaignName?: string;
+  fee: number;
+  publishDate?: string;
+  deposit?: Payment;
+  finalPayment?: Payment;
+  contract?: Contract;
+  invoices: Invoice[];
+  performance?: PerformanceData;
+  currentStage: 'unsigned' | 'deposit_pending' | 'deposit_paid' | 'final_pending' | 'kpi_pending' | 'completed';
+  kpiStatus: 'no_data' | 'not_fetched' | 'not_met' | 'met';
 }

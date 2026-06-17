@@ -10,6 +10,9 @@ import type {
   TrendDataPoint,
   DashboardStats,
   FilterOptions,
+  Contract,
+  Invoice,
+  CollaborationPayment,
 } from '../types';
 import {
   mockKOLs,
@@ -18,6 +21,8 @@ import {
   mockReviews,
   mockPerformanceData,
   mockPayments,
+  mockContracts,
+  mockInvoices,
   mockHistory,
   mockTrendData,
   mockDashboardStats,
@@ -31,7 +36,9 @@ type PersistedKey =
   | 'invitations'
   | 'reviews'
   | 'performanceData'
-  | 'payments';
+  | 'payments'
+  | 'contracts'
+  | 'invoices';
 
 const PERSISTED_KEYS: PersistedKey[] = [
   'campaigns',
@@ -39,6 +46,8 @@ const PERSISTED_KEYS: PersistedKey[] = [
   'reviews',
   'performanceData',
   'payments',
+  'contracts',
+  'invoices',
 ];
 
 const storageKey = (key: PersistedKey) => `${STORAGE_PREFIX}${key}`;
@@ -68,6 +77,8 @@ const initInvitations = () => loadFromStorage<Invitation[]>('invitations', mockI
 const initReviews = () => loadFromStorage<ContentReview[]>('reviews', mockReviews);
 const initPerformanceData = () => loadFromStorage<PerformanceData[]>('performanceData', mockPerformanceData);
 const initPayments = () => loadFromStorage<Payment[]>('payments', mockPayments);
+const initContracts = () => loadFromStorage<Contract[]>('contracts', mockContracts);
+const initInvoices = () => loadFromStorage<Invoice[]>('invoices', mockInvoices);
 
 interface AppState {
   kols: KOL[];
@@ -76,6 +87,8 @@ interface AppState {
   reviews: ContentReview[];
   performanceData: PerformanceData[];
   payments: Payment[];
+  contracts: Contract[];
+  invoices: Invoice[];
   history: CollaborationHistory[];
   trendData: TrendDataPoint[];
   dashboardStats: DashboardStats;
@@ -112,6 +125,25 @@ interface AppState {
   ) => Promise<PerformanceData>;
   createPaymentsForInvitation: (invitationId: string) => Promise<void>;
   getPerformanceByInvitationId: (invitationId: string) => PerformanceData | undefined;
+
+  createContractForInvitation: (invitationId: string) => Promise<void>;
+  signContract: (contractId: string) => Promise<void>;
+
+  createInvoiceForPayment: (paymentId: string) => Promise<Invoice>;
+  markInvoiceIssued: (invoiceId: string) => Promise<void>;
+
+  checkKpiMet: (invitationId: string) => {
+    ok: boolean;
+    reason: string;
+    impressionsRate: number;
+    engagementsRate: number;
+    clicksRate: number;
+    fetched: boolean;
+  };
+
+  getCollaborationPayments: () => CollaborationPayment[];
+
+  ensureDataConsistency: () => void;
 }
 
 export const useAppStore = create<AppState>()((set, get) => ({
@@ -121,6 +153,8 @@ export const useAppStore = create<AppState>()((set, get) => ({
   reviews: initReviews(),
   performanceData: initPerformanceData(),
   payments: initPayments(),
+  contracts: initContracts(),
+  invoices: initInvoices(),
   history: mockHistory,
   trendData: mockTrendData,
   dashboardStats: mockDashboardStats,
@@ -222,6 +256,7 @@ export const useAppStore = create<AppState>()((set, get) => ({
       const invitation = state.invitations.find((i) => i.id === id);
 
       await get().createPaymentsForInvitation(id);
+      await get().createContractForInvitation(id);
 
       if (invitation) {
         const campaign = state.getCampaignById(invitation.campaignId);
@@ -279,14 +314,12 @@ export const useAppStore = create<AppState>()((set, get) => ({
     }
 
     if (payment.type === 'final') {
-      const perf = state.getPerformanceByInvitationId(payment.invitationId);
-      if (!perf) {
-        throw new Error('KPI未达标，无法支付尾款，请先确认数据抓取结果');
+      const kpiResult = state.checkKpiMet(payment.invitationId);
+      if (!kpiResult.fetched) {
+        throw new Error('尚未抓取数据，请先到「数据报告」抓取效果数据后再支付尾款');
       }
-      const targetImpressions = perf.targetImpressions ?? 0;
-      const targetEngagements = perf.targetEngagements ?? 0;
-      if (perf.impressions < targetImpressions || perf.engagements < targetEngagements) {
-        throw new Error('KPI未达标，无法支付尾款，请先确认数据抓取结果');
+      if (!kpiResult.ok) {
+        throw new Error(kpiResult.reason);
       }
     }
 
@@ -297,6 +330,8 @@ export const useAppStore = create<AppState>()((set, get) => ({
       saveToStorage('payments', payments);
       return { payments };
     });
+
+    await get().createInvoiceForPayment(id);
   },
 
   setCurrentKol: (kol) => set({ currentKol: kol }),
@@ -378,6 +413,9 @@ export const useAppStore = create<AppState>()((set, get) => ({
     const invitation = get().invitations.find((i) => i.id === invitationId);
     if (!invitation) return;
 
+    const existingPayments = get().getPaymentsByInvitationId(invitationId);
+    if (existingPayments.length > 0) return;
+
     const depositAmount = Math.round(invitation.fee * 0.3);
     const finalAmount = Math.round(invitation.fee * 0.7);
 
@@ -412,4 +450,259 @@ export const useAppStore = create<AppState>()((set, get) => ({
 
   getPerformanceByInvitationId: (invitationId) =>
     get().performanceData.find((p) => p.contentId === invitationId),
+
+  createContractForInvitation: async (invitationId) => {
+    await delay(300);
+    const state = get();
+    const invitation = state.invitations.find((i) => i.id === invitationId);
+    if (!invitation) return;
+
+    const existingContract = state.contracts.find((c) => c.invitationId === invitationId);
+    if (existingContract) return;
+
+    const newContract: Contract = {
+      id: `contract-${generateId()}`,
+      invitationId,
+      kolName: invitation.kolName,
+      campaignName: invitation.campaignName,
+      status: 'unsigned',
+      fee: invitation.fee,
+      createdAt: new Date().toISOString(),
+    };
+
+    set((state) => {
+      const contracts = [newContract, ...state.contracts];
+      saveToStorage('contracts', contracts);
+      return { contracts };
+    });
+  },
+
+  signContract: async (contractId) => {
+    await delay(300);
+    set((state) => {
+      const contracts = state.contracts.map((c) =>
+        c.id === contractId ? { ...c, status: 'signed' as const, signedAt: new Date().toISOString() } : c
+      );
+      saveToStorage('contracts', contracts);
+      return { contracts };
+    });
+  },
+
+  createInvoiceForPayment: async (paymentId) => {
+    await delay(300);
+    const state = get();
+    const payment = state.payments.find((p) => p.id === paymentId);
+    if (!payment) {
+      throw new Error('支付记录不存在');
+    }
+
+    const existingInvoice = state.invoices.find((i) => i.paymentId === paymentId);
+    if (existingInvoice) {
+      return existingInvoice;
+    }
+
+    const newInvoice: Invoice = {
+      id: `invoice-${generateId()}`,
+      paymentId,
+      invitationId: payment.invitationId,
+      kolName: payment.kolName,
+      campaignName: payment.campaignName,
+      type: payment.type,
+      amount: payment.amount,
+      status: 'issued',
+      issuedAt: new Date().toISOString(),
+      createdAt: new Date().toISOString(),
+    };
+
+    set((state) => {
+      const invoices = [newInvoice, ...state.invoices];
+      saveToStorage('invoices', invoices);
+      return { invoices };
+    });
+
+    return newInvoice;
+  },
+
+  markInvoiceIssued: async (invoiceId) => {
+    await delay(300);
+    set((state) => {
+      const invoices = state.invoices.map((i) =>
+        i.id === invoiceId ? { ...i, status: 'issued' as const, issuedAt: new Date().toISOString() } : i
+      );
+      saveToStorage('invoices', invoices);
+      return { invoices };
+    });
+  },
+
+  checkKpiMet: (invitationId) => {
+    const perf = get().getPerformanceByInvitationId(invitationId);
+    const noDataResult = {
+      ok: false,
+      reason: '',
+      impressionsRate: 0,
+      engagementsRate: 0,
+      clicksRate: 0,
+      fetched: false,
+    };
+
+    if (!perf) {
+      return {
+        ...noDataResult,
+        reason: '尚未抓取数据，请先到「数据报告」抓取效果数据后再支付尾款',
+      };
+    }
+
+    if (perf.fetchStatus !== 'success' || !perf.lastFetchedAt) {
+      return {
+        ...noDataResult,
+        reason: '尚未抓取数据，请先到「数据报告」抓取效果数据后再支付尾款',
+      };
+    }
+
+    const targetImpressions = perf.targetImpressions ?? 0;
+    const targetEngagements = perf.targetEngagements ?? 0;
+    const targetClicks = perf.targetClicks ?? 0;
+
+    const impressionsRate = targetImpressions > 0 ? Math.round((perf.impressions / targetImpressions) * 100) : 100;
+    const engagementsRate = targetEngagements > 0 ? Math.round((perf.engagements / targetEngagements) * 100) : 100;
+    const clicksRate = targetClicks > 0 ? Math.round((perf.clicks / targetClicks) * 100) : 100;
+
+    const impressionsOk = perf.impressions >= targetImpressions;
+    const engagementsOk = perf.engagements >= targetEngagements;
+    const clicksOk = perf.clicks >= targetClicks;
+
+    if (impressionsOk && engagementsOk && clicksOk) {
+      return {
+        ok: true,
+        reason: 'KPI已达标',
+        impressionsRate,
+        engagementsRate,
+        clicksRate,
+        fetched: true,
+      };
+    }
+
+    const notMet: string[] = [];
+    if (!impressionsOk) notMet.push('曝光');
+    if (!engagementsOk) notMet.push('互动');
+    if (!clicksOk) notMet.push('点击');
+
+    const met: string[] = [];
+    if (impressionsOk) met.push('曝光');
+    if (engagementsOk) met.push('互动');
+    if (clicksOk) met.push('点击');
+
+    let reason = `KPI未达标（曝光${impressionsRate}%、互动${engagementsRate}%、点击${clicksRate}%）`;
+    if (met.length > 0 && notMet.length > 0) {
+      reason += `，${met.join('和')}达标但${notMet.join('和')}未满足，请确认实际投放效果`;
+    } else {
+      reason += '，请确认实际投放效果';
+    }
+
+    return {
+      ok: false,
+      reason,
+      impressionsRate,
+      engagementsRate,
+      clicksRate,
+      fetched: true,
+    };
+  },
+
+  getCollaborationPayments: () => {
+    const state = get();
+    const { invitations, payments, contracts, invoices, performanceData } = state;
+
+    const invitationIds = new Set<string>();
+    invitations.forEach((inv) => invitationIds.add(inv.id));
+    payments.forEach((p) => invitationIds.add(p.invitationId));
+
+    const result: CollaborationPayment[] = [];
+
+    invitationIds.forEach((invitationId) => {
+      const invitation = invitations.find((i) => i.id === invitationId);
+      const invPayments = payments.filter((p) => p.invitationId === invitationId);
+      const deposit = invPayments.find((p) => p.type === 'deposit');
+      const finalPayment = invPayments.find((p) => p.type === 'final');
+      const contract = contracts.find((c) => c.invitationId === invitationId);
+      const invInvoices = invoices.filter((i) => i.invitationId === invitationId);
+      const performance = performanceData.find((p) => p.contentId === invitationId);
+
+      const fee = invitation?.fee ?? (deposit?.amount || 0) + (finalPayment?.amount || 0);
+
+      let currentStage: CollaborationPayment['currentStage'] = 'unsigned';
+      let kpiStatus: CollaborationPayment['kpiStatus'] = 'no_data';
+
+      if (!contract || contract.status === 'unsigned') {
+        currentStage = 'unsigned';
+      } else if (deposit?.status === 'pending') {
+        currentStage = 'deposit_pending';
+      } else if (deposit?.status === 'paid' && finalPayment?.status === 'pending') {
+        const kpiResult = state.checkKpiMet(invitationId);
+        if (kpiResult.ok) {
+          currentStage = 'final_pending';
+        } else {
+          currentStage = 'kpi_pending';
+        }
+      } else if (deposit?.status === 'paid' && finalPayment?.status === 'paid') {
+        currentStage = 'completed';
+      } else if (deposit?.status === 'paid') {
+        currentStage = 'deposit_paid';
+      }
+
+      if (!performance) {
+        kpiStatus = 'no_data';
+      } else if (performance.fetchStatus !== 'success' || !performance.lastFetchedAt) {
+        kpiStatus = 'not_fetched';
+      } else {
+        const kpiResult = state.checkKpiMet(invitationId);
+        kpiStatus = kpiResult.ok ? 'met' : 'not_met';
+      }
+
+      result.push({
+        invitationId,
+        kolName: invitation?.kolName,
+        campaignName: invitation?.campaignName,
+        fee,
+        publishDate: invitation?.publishDate,
+        deposit,
+        finalPayment,
+        contract,
+        invoices: invInvoices,
+        performance,
+        currentStage,
+        kpiStatus,
+      });
+    });
+
+    return result.sort((a, b) => {
+      const dateA = a.contract?.createdAt || a.deposit?.dueDate || '';
+      const dateB = b.contract?.createdAt || b.deposit?.dueDate || '';
+      return dateB.localeCompare(dateA);
+    });
+  },
+
+  ensureDataConsistency: () => {
+    const state = get();
+    const { invitations, payments, contracts, invoices } = state;
+
+    const acceptedInvitations = invitations.filter((i) => i.status === 'accepted');
+    acceptedInvitations.forEach(async (invitation) => {
+      const hasPayments = payments.some((p) => p.invitationId === invitation.id);
+      if (hasPayments) {
+        const hasContract = contracts.some((c) => c.invitationId === invitation.id);
+        if (!hasContract) {
+          await get().createContractForInvitation(invitation.id);
+        }
+      }
+    });
+
+    const paidPayments = payments.filter((p) => p.status === 'paid');
+    paidPayments.forEach(async (payment) => {
+      const hasInvoice = invoices.some((i) => i.paymentId === payment.id);
+      if (!hasInvoice) {
+        await get().createInvoiceForPayment(payment.id);
+      }
+    });
+  },
 }));

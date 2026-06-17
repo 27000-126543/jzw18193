@@ -8,6 +8,8 @@ import type {
   CollaborationHistory,
   TrendDataPoint,
   DashboardStats,
+  Contract,
+  Invoice,
 } from '../types';
 
 const categories = [
@@ -327,12 +329,68 @@ function generateDashboardStats(): DashboardStats {
   };
 }
 
+function generateContracts(invitations: Invitation[]): Contract[] {
+  const contracts: Contract[] = [];
+  const acceptedInvitations = invitations.filter((i) => i.status === 'accepted');
+
+  for (let i = 0; i < acceptedInvitations.length; i++) {
+    const invitation = acceptedInvitations[i];
+    const isSigned = Math.random() > 0.3;
+    const createdAt = new Date(invitation.createdAt);
+    const signedAt = new Date(createdAt);
+    signedAt.setDate(signedAt.getDate() + 2);
+
+    contracts.push({
+      id: `contract-${i + 1}`,
+      invitationId: invitation.id,
+      kolName: invitation.kolName,
+      campaignName: invitation.campaignName,
+      status: isSigned ? 'signed' : 'unsigned',
+      fee: invitation.fee,
+      signedAt: isSigned ? signedAt.toISOString() : undefined,
+      createdAt: createdAt.toISOString(),
+    });
+  }
+
+  return contracts;
+}
+
+function generateInvoices(payments: Payment[]): Invoice[] {
+  const invoices: Invoice[] = [];
+  const paidPayments = payments.filter((p) => p.status === 'paid');
+
+  for (let i = 0; i < paidPayments.length; i++) {
+    const payment = paidPayments[i];
+    const isIssued = Math.random() > 0.2;
+    const createdAt = new Date(payment.paidAt || new Date().toISOString());
+    const issuedAt = new Date(createdAt);
+    issuedAt.setDate(issuedAt.getDate() + 1);
+
+    invoices.push({
+      id: `invoice-${i + 1}`,
+      paymentId: payment.id,
+      invitationId: payment.invitationId,
+      kolName: payment.kolName,
+      campaignName: payment.campaignName,
+      type: payment.type,
+      amount: payment.amount,
+      status: isIssued ? 'issued' : 'pending',
+      issuedAt: isIssued ? issuedAt.toISOString() : undefined,
+      createdAt: createdAt.toISOString(),
+    });
+  }
+
+  return invoices;
+}
+
 export const mockKOLs = generateKOLs();
 export const mockCampaigns = generateCampaigns();
 export const mockInvitations = generateInvitations(mockKOLs, mockCampaigns);
 export const mockReviews = generateReviews(mockInvitations);
 export const mockPerformanceData = generatePerformanceData(mockReviews);
 export const mockPayments = generatePayments(mockInvitations);
+export const mockContracts = generateContracts(mockInvitations);
+export const mockInvoices = generateInvoices(mockPayments);
 export const mockHistory = generateHistory(mockKOLs, mockCampaigns, mockPerformanceData);
 export const mockTrendData = generateTrendData();
 export const mockDashboardStats = generateDashboardStats();

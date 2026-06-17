@@ -62,7 +62,7 @@ export default function Invitations() {
     setLoadingId(id);
     try {
       await updateInvitationStatus(id, 'accepted');
-      alert('已确认合作！');
+      alert('确认合作成功！已自动生成合同、定金/尾款付款记录和效果数据追踪。可前往「费用结算」和「排期管理」查看。');
     } finally {
       setLoadingId(null);
     }
