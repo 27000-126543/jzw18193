@@ -1,4 +1,4 @@
-import { useState, useMemo, useCallback } from 'react';
+import { useState, useMemo, useCallback, useRef } from 'react';
 import { useShallow } from 'zustand/shallow';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useNavigate } from 'react-router-dom';
@@ -29,8 +29,54 @@ import {
   Eye as EyeIcon,
   Heart,
   MousePointerClick,
+  Flag,
+  AlertOctagon,
+  Check,
+  Copy,
+  RefreshCw,
+  Bell,
 } from 'lucide-react';
 import type { Payment, Invitation, PerformanceData, Contract, Invoice } from '@/types';
+
+type ExceptionType = 'communication_break' | 'data_anomaly' | 'need_reconfirm' | 'other';
+type ExceptionStatus = 'active' | 'resolved';
+
+interface CollaborationException {
+  id: string;
+  invitationId: string;
+  type: ExceptionType;
+  remark: string;
+  status: ExceptionStatus;
+  createdAt: string;
+  resolvedAt?: string;
+}
+
+type TodoPriority = 'high' | 'medium' | 'low';
+
+interface TodoItem {
+  id: string;
+  invitationId: string;
+  title: string;
+  kolName: string;
+  campaignName: string;
+  priority: TodoPriority;
+  dueDate: string;
+  stage: string;
+}
+
+const exceptionTypeLabels: Record<ExceptionType, string> = {
+  communication_break: '沟通中断',
+  data_anomaly: '数据异常',
+  need_reconfirm: '需重新确认',
+  other: '其他',
+};
+
+const exceptionFilterOptions = [
+  { value: 'all', label: '全部' },
+  { value: 'active', label: '有异常' },
+  { value: 'resolved', label: '已解决' },
+] as const;
+type ExceptionFilter = typeof exceptionFilterOptions[number]['value'];
 
 const stageFilters = [
   { value: 'all', label: '全部' },
@@ -63,6 +109,12 @@ interface CollaborationView {
   invoices: Invoice[];
   invoicesIssued: number;
   platform?: string;
+  exception?: CollaborationException;
+  dueStatus?: {
+    type: 'overdue' | 'upcoming' | 'normal';
+    days: number;
+    text: string;
+  };
 }
 
 function computeStage(cv: {
@@ -78,6 +130,40 @@ function computeStage(cv: {
   if (!cv.finalPayment || cv.finalPayment.status !== 'paid') return 'final_pending';
   return 'completed';
 }
+
+const generateId = () => Math.random().toString(36).substr(2, 9);
+
+const computeDueStatus = (publishDate?: string, stage?: CollaborationStage) => {
+  if (!publishDate || stage === 'completed') return undefined;
+  const publish = new Date(publishDate);
+  const now = new Date();
+  const diffTime = now.getTime() - publish.getTime();
+  const diffDays = Math.floor(diffTime / (1000 * 60 * 60 * 24));
+
+  if (diffDays > 7) {
+    return {
+      type: 'overdue' as const,
+      days: diffDays - 7,
+      text: `已逾期 ${diffDays - 7} 天`,
+    };
+  } else if (diffDays >= 0 && diffDays <= 7) {
+    const remaining = 7 - diffDays;
+    if (remaining === 0) {
+      return {
+        type: 'upcoming' as const,
+        days: 0,
+        text: '今日到期',
+      };
+    }
+    return {
+      type: 'upcoming' as const,
+      days: remaining,
+      text: `${remaining}天后到期`,
+    };
+  } else {
+    return undefined;
+  }
+};
 
 export default function Finance() {
   const navigate = useNavigate();
@@ -112,8 +198,42 @@ export default function Finance() {
   );
 
   const [stageFilter, setStageFilter] = useState<StageFilter>('all');
+  const [exceptionFilter, setExceptionFilter] = useState<ExceptionFilter>('all');
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedCollab, setSelectedCollab] = useState<CollaborationView | null>(null);
+  const [exceptions, setExceptions] = useState<CollaborationException[]>([]);
+  const [exceptionModal, setExceptionModal] = useState<{
+    open: boolean;
+    invitationId: string | null;
+    mode: 'create' | 'resolve';
+  }>({ open: false, invitationId: null, mode: 'create' });
+  const [exceptionForm, setExceptionForm] = useState({
+    type: 'communication_break' as ExceptionType,
+    remark: '',
+  });
+  const tableRef = useRef<HTMLDivElement>(null);
+
+  const setException = useCallback((invitationId: string, type: ExceptionType, remark: string) => {
+    const newException: CollaborationException = {
+      id: `exc-${generateId()}`,
+      invitationId,
+      type,
+      remark,
+      status: 'active',
+      createdAt: new Date().toISOString(),
+    };
+    setExceptions((prev) => [...prev.filter((e) => e.invitationId !== invitationId), newException]);
+  }, []);
+
+  const resolveException = useCallback((invitationId: string) => {
+    setExceptions((prev) =>
+      prev.map((e) =>
+        e.invitationId === invitationId
+          ? { ...e, status: 'resolved' as const, resolvedAt: new Date().toISOString() }
+          : e
+      )
+    );
+  }, []);
 
   const collaborations = useMemo<CollaborationView[]>(() => {
     const acceptedInvitations = invitations.filter((inv) => inv.status === 'accepted');
@@ -136,6 +256,7 @@ export default function Finance() {
       }
 
       const kol = inv.kolId ? getKolById(inv.kolId) : undefined;
+      const exception = exceptions.find((e) => e.invitationId === inv.id);
 
       const cv = {
         invitation: inv,
@@ -151,11 +272,77 @@ export default function Finance() {
         invoices: invInvoices,
         invoicesIssued,
         platform: kol?.platform,
+        exception,
+        dueStatus: undefined,
       };
       cv.stage = computeStage(cv);
+      cv.dueStatus = computeDueStatus(inv.publishDate, cv.stage);
       return cv;
     });
-  }, [invitations, payments, performanceData, contracts, invoices, getPerformanceByInvitationId, getKolById, checkKpiMet]);
+  }, [invitations, payments, performanceData, contracts, invoices, getPerformanceByInvitationId, getKolById, checkKpiMet, exceptions]);
+
+  const todos = useMemo<TodoItem[]>(() => {
+    const todoList: TodoItem[] = [];
+    collaborations.forEach((cv) => {
+      if (cv.stage === 'completed') return;
+
+      if (cv.stage === 'unsigned') {
+        todoList.push({
+          id: `todo-${cv.invitation.id}-sign`,
+          invitationId: cv.invitation.id,
+          title: '签署合同',
+          kolName: cv.invitation.kolName || '',
+          campaignName: cv.invitation.campaignName || '',
+          priority: 'high',
+          dueDate: cv.invitation.publishDate || '',
+          stage: cv.stage,
+        });
+      }
+      if (cv.stage === 'deposit_pending') {
+        todoList.push({
+          id: `todo-${cv.invitation.id}-deposit`,
+          invitationId: cv.invitation.id,
+          title: '支付定金',
+          kolName: cv.invitation.kolName || '',
+          campaignName: cv.invitation.campaignName || '',
+          priority: 'high',
+          dueDate: cv.invitation.publishDate || '',
+          stage: cv.stage,
+        });
+      }
+      if (cv.stage === 'kpi_pending') {
+        todoList.push({
+          id: `todo-${cv.invitation.id}-data`,
+          invitationId: cv.invitation.id,
+          title: '抓取数据',
+          kolName: cv.invitation.kolName || '',
+          campaignName: cv.invitation.campaignName || '',
+          priority: 'medium',
+          dueDate: cv.invitation.publishDate || '',
+          stage: cv.stage,
+        });
+      }
+      if (cv.stage === 'final_pending') {
+        todoList.push({
+          id: `todo-${cv.invitation.id}-final`,
+          invitationId: cv.invitation.id,
+          title: '支付尾款',
+          kolName: cv.invitation.kolName || '',
+          campaignName: cv.invitation.campaignName || '',
+          priority: 'medium',
+          dueDate: cv.invitation.publishDate || '',
+          stage: cv.stage,
+        });
+      }
+    });
+
+    return todoList
+      .sort((a, b) => {
+        const priorityOrder = { high: 0, medium: 1, low: 2 };
+        return priorityOrder[a.priority] - priorityOrder[b.priority];
+      })
+      .slice(0, 5);
+  }, [collaborations]);
 
   const filteredCollaborations = useMemo(() => {
     return collaborations.filter((cv) => {
@@ -164,9 +351,13 @@ export default function Finance() {
         !searchQuery ||
         cv.invitation.kolName?.toLowerCase().includes(searchQuery.toLowerCase()) ||
         cv.invitation.campaignName?.toLowerCase().includes(searchQuery.toLowerCase());
-      return matchesStage && matchesSearch;
+      const matchesException =
+        exceptionFilter === 'all' ||
+        (exceptionFilter === 'active' && cv.exception?.status === 'active') ||
+        (exceptionFilter === 'resolved' && cv.exception?.status === 'resolved');
+      return matchesStage && matchesSearch && matchesException;
     });
-  }, [collaborations, stageFilter, searchQuery]);
+  }, [collaborations, stageFilter, searchQuery, exceptionFilter]);
 
   const stats = useMemo(() => {
     const total = collaborations.reduce((sum, cv) => sum + cv.totalFee, 0);
@@ -256,6 +447,47 @@ export default function Finance() {
       }
     },
     [invoices, createInvoiceForPayment, markInvoiceIssued]
+  );
+
+  const handleOpenExceptionModal = useCallback(
+    (invitationId: string, mode: 'create' | 'resolve') => {
+      setExceptionModal({ open: true, invitationId, mode });
+      if (mode === 'create') {
+        setExceptionForm({ type: 'communication_break', remark: '' });
+      }
+    },
+    []
+  );
+
+  const handleCloseExceptionModal = useCallback(() => {
+    setExceptionModal({ open: false, invitationId: null, mode: 'create' });
+    setExceptionForm({ type: 'communication_break', remark: '' });
+  }, []);
+
+  const handleSubmitException = useCallback(() => {
+    if (!exceptionModal.invitationId) return;
+    if (exceptionModal.mode === 'create') {
+      setException(exceptionModal.invitationId, exceptionForm.type, exceptionForm.remark);
+      alert('异常已标记！');
+    } else {
+      resolveException(exceptionModal.invitationId);
+      alert('异常已解决！');
+    }
+    handleCloseExceptionModal();
+  }, [exceptionModal, exceptionForm, setException, resolveException, handleCloseExceptionModal]);
+
+  const handleTodoClick = useCallback(
+    (todo: TodoItem) => {
+      const row = document.getElementById(`collab-row-${todo.invitationId}`);
+      if (row) {
+        row.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        row.classList.add('ring-2', 'ring-primary-500');
+        setTimeout(() => {
+          row.classList.remove('ring-2', 'ring-primary-500');
+        }, 2000);
+      }
+    },
+    []
   );
 
   const getStageLabel = (stage: CollaborationStage) => {
@@ -399,6 +631,55 @@ export default function Finance() {
         </div>
       </Card>
 
+      {todos.length > 0 && (
+        <Card className="p-4">
+          <div className="flex items-center gap-2 mb-3">
+            <Bell className="w-5 h-5 text-amber-500" />
+            <h3 className="font-display font-semibold text-lg text-gray-800">待办提醒</h3>
+            <span className="text-xs bg-amber-100 text-amber-700 px-2 py-0.5 rounded-full">
+              {todos.length} 项待处理
+            </span>
+          </div>
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+            {todos.map((todo) => {
+              const priorityColor = {
+                high: 'bg-danger-500',
+                medium: 'bg-amber-500',
+                low: 'bg-gray-400',
+              }[todo.priority];
+              const dueText = todo.dueDate
+                ? computeDueStatus(todo.dueDate, todo.stage as CollaborationStage)?.text || '正常'
+                : '无截止日期';
+              const dueClass =
+                dueText.includes('逾期')
+                  ? 'text-danger-600'
+                  : dueText.includes('到期')
+                  ? 'text-amber-600'
+                  : 'text-gray-500';
+              return (
+                <motion.div
+                  key={todo.id}
+                  whileHover={{ scale: 1.02 }}
+                  whileTap={{ scale: 0.98 }}
+                  onClick={() => handleTodoClick(todo)}
+                  className="flex items-start gap-3 p-3 bg-gray-50 rounded-lg cursor-pointer hover:bg-gray-100 transition-colors"
+                >
+                  <div className={`w-3 h-3 rounded-full mt-1.5 flex-shrink-0 ${priorityColor}`} />
+                  <div className="flex-1 min-w-0">
+                    <p className="font-medium text-gray-800 text-sm truncate">{todo.title}</p>
+                    <p className="text-xs text-gray-500 truncate">
+                      {todo.kolName} · {todo.campaignName}
+                    </p>
+                    <p className={`text-xs mt-1 ${dueClass}`}>{dueText}</p>
+                  </div>
+                  <ChevronRight className="w-4 h-4 text-gray-400 flex-shrink-0 mt-1" />
+                </motion.div>
+              );
+            })}
+          </div>
+        </Card>
+      )}
+
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
         <div className="relative flex-1 max-w-md">
           <svg
@@ -422,21 +703,40 @@ export default function Finance() {
             className="input pl-12"
           />
         </div>
-        <div className="flex gap-2 overflow-x-auto pb-2">
-          {stageFilters.map((filter) => (
-            <button
-              key={filter.value}
-              onClick={() => setStageFilter(filter.value)}
-              className={cn(
-                'px-4 py-2 rounded-lg text-sm font-medium whitespace-nowrap transition-all',
-                stageFilter === filter.value
-                  ? 'bg-primary-700 text-white'
-                  : 'bg-white text-gray-600 hover:bg-gray-50 border border-gray-200'
-              )}
-            >
-              {filter.label}
-            </button>
-          ))}
+        <div className="flex flex-wrap items-center gap-4">
+          <div className="flex gap-2 overflow-x-auto pb-2">
+            {stageFilters.map((filter) => (
+              <button
+                key={filter.value}
+                onClick={() => setStageFilter(filter.value)}
+                className={cn(
+                  'px-4 py-2 rounded-lg text-sm font-medium whitespace-nowrap transition-all',
+                  stageFilter === filter.value
+                    ? 'bg-primary-700 text-white'
+                    : 'bg-white text-gray-600 hover:bg-gray-50 border border-gray-200'
+                )}
+              >
+                {filter.label}
+              </button>
+            ))}
+          </div>
+          <div className="flex items-center gap-2">
+            <span className="text-sm text-gray-500">异常：</span>
+            {exceptionFilterOptions.map((filter) => (
+              <button
+                key={filter.value}
+                onClick={() => setExceptionFilter(filter.value)}
+                className={cn(
+                  'px-3 py-1.5 rounded-lg text-sm font-medium whitespace-nowrap transition-all',
+                  exceptionFilter === filter.value
+                    ? 'bg-danger-600 text-white'
+                    : 'bg-white text-gray-600 hover:bg-gray-50 border border-gray-200'
+                )}
+              >
+                {filter.label}
+              </button>
+            ))}
+          </div>
         </div>
       </div>
 
@@ -445,7 +745,7 @@ export default function Finance() {
           <h3 className="font-display font-semibold text-lg text-gray-800">合作单列表</h3>
         </div>
 
-        <div className="overflow-x-auto">
+        <div className="overflow-x-auto" ref={tableRef}>
           <table className="w-full">
             <thead>
               <tr className="border-b border-gray-100">
@@ -460,6 +760,12 @@ export default function Finance() {
                 </th>
                 <th className="text-center py-4 px-4 text-sm font-medium text-gray-500">
                   KPI状态
+                </th>
+                <th className="text-center py-4 px-4 text-sm font-medium text-gray-500">
+                  到期/逾期
+                </th>
+                <th className="text-center py-4 px-4 text-sm font-medium text-gray-500">
+                  异常状态
                 </th>
                 <th className="text-center py-4 px-4 text-sm font-medium text-gray-500">
                   合同状态
@@ -494,17 +800,32 @@ export default function Finance() {
                     !cv.invoices.some((i) => i.paymentId === p.id && i.status === 'issued')
                 );
 
+                const isOverdue = cv.dueStatus?.type === 'overdue';
+                const hasActiveException = cv.exception?.status === 'active';
+                const rowBgClass = isOverdue
+                  ? 'bg-danger-50'
+                  : hasActiveException
+                  ? 'bg-amber-50'
+                  : '';
+
                 return (
                   <motion.tr
                     key={cv.invitation.id}
+                    id={`collab-row-${cv.invitation.id}`}
                     initial={{ opacity: 0 }}
                     animate={{ opacity: 1 }}
                     transition={{ delay: index * 0.03 }}
-                    className="border-b border-gray-50 hover:bg-gray-50 transition-colors"
+                    className={cn(
+                      'border-b border-gray-50 hover:bg-gray-50 transition-colors',
+                      rowBgClass
+                    )}
                   >
                     <td className="py-4 px-4">
                       <div className="flex flex-col gap-1">
                         <div className="flex items-center gap-2">
+                          {hasActiveException && (
+                            <Flag className="w-4 h-4 text-danger-500 flex-shrink-0" />
+                          )}
                           <div className="w-9 h-9 bg-gradient-to-br from-primary-100 to-primary-200 rounded-full flex items-center justify-center flex-shrink-0">
                             <span className="text-primary-700 font-semibold text-sm">
                               {cv.invitation.kolName?.charAt(0)}
@@ -522,14 +843,21 @@ export default function Finance() {
                             </span>
                           </div>
                         </div>
-                        <span
-                          className={cn(
-                            'inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-medium w-fit ml-11',
-                            getStageBadgeClass(cv.stage)
+                        <div className="flex items-center gap-2 ml-11">
+                          <span
+                            className={cn(
+                              'inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-medium w-fit',
+                              getStageBadgeClass(cv.stage)
+                            )}
+                          >
+                            {getStageLabel(cv.stage)}
+                          </span>
+                          {hasActiveException && (
+                            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-medium bg-danger-100 text-danger-700">
+                              {exceptionTypeLabels[cv.exception!.type]}
+                            </span>
                           )}
-                        >
-                          {getStageLabel(cv.stage)}
-                        </span>
+                        </div>
                       </div>
                     </td>
                     <td className="py-4 px-4 text-right">
@@ -579,6 +907,51 @@ export default function Finance() {
                         <span className="inline-flex items-center gap-1 text-gray-400 text-sm font-medium">
                           ⚪ 待抓取
                         </span>
+                      )}
+                    </td>
+                    <td className="py-4 px-4 text-center">
+                      {cv.dueStatus ? (
+                        <span
+                          className={cn(
+                            'inline-flex items-center gap-1 text-sm font-medium',
+                            cv.dueStatus.type === 'overdue'
+                              ? 'text-danger-600'
+                              : cv.dueStatus.type === 'upcoming'
+                              ? 'text-amber-600'
+                              : 'text-gray-600'
+                          )}
+                        >
+                          {cv.dueStatus.type === 'overdue' ? '🔴' : '🟠'}
+                          {cv.dueStatus.text}
+                        </span>
+                      ) : (
+                        <span className="text-gray-400 text-sm">-</span>
+                      )}
+                    </td>
+                    <td className="py-4 px-4 text-center">
+                      {cv.exception ? (
+                        <span
+                          className={cn(
+                            'inline-flex items-center gap-1 text-sm font-medium',
+                            cv.exception.status === 'active'
+                              ? 'text-danger-600'
+                              : 'text-gray-500'
+                          )}
+                        >
+                          {cv.exception.status === 'active' ? (
+                            <>
+                              <AlertOctagon className="w-4 h-4" />
+                              异常中
+                            </>
+                          ) : (
+                            <>
+                              <CheckCircle2 className="w-4 h-4" />
+                              已解决
+                            </>
+                          )}
+                        </span>
+                      ) : (
+                        <span className="text-gray-400 text-sm">-</span>
                       )}
                     </td>
                     <td className="py-4 px-4 text-center">
@@ -657,6 +1030,23 @@ export default function Finance() {
                             开票
                           </button>
                         ))}
+                        {hasActiveException ? (
+                          <button
+                            onClick={() => handleOpenExceptionModal(cv.invitation.id, 'resolve')}
+                            className="btn-primary text-xs py-1.5 px-2.5 bg-success-600 hover:bg-success-700"
+                          >
+                            <Check className="w-3.5 h-3.5" />
+                            解决异常
+                          </button>
+                        ) : (
+                          <button
+                            onClick={() => handleOpenExceptionModal(cv.invitation.id, 'create')}
+                            className="btn-secondary text-xs py-1.5 px-2.5 text-amber-600 border-amber-200 hover:bg-amber-50"
+                          >
+                            <AlertTriangle className="w-3.5 h-3.5" />
+                            标记异常
+                          </button>
+                        )}
                         <button
                           onClick={() => setSelectedCollab(cv)}
                           className="btn-secondary text-xs py-1.5 px-2.5"
@@ -684,6 +1074,18 @@ export default function Finance() {
       </Card>
 
       <AnimatePresence>
+        {exceptionModal.open && (
+          <ExceptionModal
+            mode={exceptionModal.mode}
+            form={exceptionForm}
+            onFormChange={setExceptionForm}
+            onClose={handleCloseExceptionModal}
+            onSubmit={handleSubmitException}
+          />
+        )}
+      </AnimatePresence>
+
+      <AnimatePresence>
         {selectedCollab && (
           <CollaborationDetailModal
             cv={selectedCollab}
@@ -693,11 +1095,21 @@ export default function Finance() {
             onIssueInvoice={handleIssueInvoice}
             onGoReports={() => navigate('/reports')}
             checkKpiMet={checkKpiMet}
+            onMarkException={handleOpenExceptionModal}
+            onResolveException={resolveException}
           />
         )}
       </AnimatePresence>
     </div>
   );
+}
+
+interface ExceptionModalProps {
+  mode: 'create' | 'resolve';
+  form: { type: ExceptionType; remark: string };
+  onFormChange: (form: { type: ExceptionType; remark: string }) => void;
+  onClose: () => void;
+  onSubmit: () => void;
 }
 
 interface ModalProps {
@@ -715,6 +1127,104 @@ interface ModalProps {
     clicksRate: number;
     fetched: boolean;
   };
+  onMarkException: (invitationId: string, mode: 'create' | 'resolve') => void;
+  onResolveException: (invitationId: string) => void;
+}
+
+function ExceptionModal({ mode, form, onFormChange, onClose, onSubmit }: ExceptionModalProps) {
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+      <motion.div
+        initial={{ opacity: 0 }}
+        animate={{ opacity: 1 }}
+        exit={{ opacity: 0 }}
+        onClick={onClose}
+        className="absolute inset-0 bg-black/50 backdrop-blur-sm"
+      />
+      <motion.div
+        initial={{ opacity: 0, y: 20, scale: 0.98 }}
+        animate={{ opacity: 1, y: 0, scale: 1 }}
+        exit={{ opacity: 0, y: 20, scale: 0.98 }}
+        transition={{ type: 'spring', damping: 25, stiffness: 300 }}
+        className="relative w-full max-w-md bg-white rounded-2xl shadow-2xl"
+      >
+        <div className="sticky top-0 bg-white border-b border-gray-100 px-6 py-4 flex items-center justify-between z-10">
+          <h2 className="font-display font-bold text-xl text-gray-800">
+            {mode === 'create' ? '标记异常' : '解决异常'}
+          </h2>
+          <button
+            onClick={onClose}
+            className="w-8 h-8 rounded-lg hover:bg-gray-100 flex items-center justify-center transition-colors"
+          >
+            <X className="w-5 h-5 text-gray-500" />
+          </button>
+        </div>
+
+        <div className="p-6 space-y-4">
+          {mode === 'create' ? (
+            <>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-2">
+                  异常类型
+                </label>
+                <div className="grid grid-cols-2 gap-2">
+                  {Object.entries(exceptionTypeLabels).map(([value, label]) => (
+                    <button
+                      key={value}
+                      onClick={() => onFormChange({ ...form, type: value as ExceptionType })}
+                      className={cn(
+                        'px-4 py-2 rounded-lg text-sm font-medium transition-all border',
+                        form.type === value
+                          ? 'bg-danger-50 text-danger-700 border-danger-200'
+                          : 'bg-white text-gray-600 border-gray-200 hover:bg-gray-50'
+                      )}
+                    >
+                      {label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-2">
+                  备注说明
+                </label>
+                <textarea
+                  value={form.remark}
+                  onChange={(e) => onFormChange({ ...form, remark: e.target.value })}
+                  placeholder="请输入异常说明..."
+                  rows={3}
+                  className="input w-full resize-none"
+                />
+              </div>
+            </>
+          ) : (
+            <div className="text-center py-4">
+              <div className="w-16 h-16 bg-success-100 rounded-full flex items-center justify-center mx-auto mb-4">
+                <CheckCircle2 className="w-8 h-8 text-success-600" />
+              </div>
+              <p className="text-gray-800 font-medium">确认标记异常为已解决？</p>
+              <p className="text-gray-500 text-sm mt-1">解决后异常状态将更新为已解决</p>
+            </div>
+          )}
+        </div>
+
+        <div className="flex justify-end gap-2 p-6 pt-0">
+          <button onClick={onClose} className="btn-secondary">
+            取消
+          </button>
+          <button
+            onClick={onSubmit}
+            className={cn(
+              'btn-primary',
+              mode === 'create' ? 'bg-danger-600 hover:bg-danger-700' : 'bg-success-600 hover:bg-success-700'
+            )}
+          >
+            {mode === 'create' ? '确认标记' : '确认解决'}
+          </button>
+        </div>
+      </motion.div>
+    </div>
+  );
 }
 
 function CollaborationDetailModal({
@@ -725,6 +1235,8 @@ function CollaborationDetailModal({
   onIssueInvoice,
   onGoReports,
   checkKpiMet,
+  onMarkException,
+  onResolveException,
 }: ModalProps) {
   const depositPaid = cv.depositPayment?.status === 'paid';
   const finalPaid = cv.finalPayment?.status === 'paid';
@@ -732,6 +1244,9 @@ function CollaborationDetailModal({
 
   const isInvoiceIssued = (paymentId: string) =>
     cv.invoices.some((i) => i.paymentId === paymentId && i.status === 'issued');
+
+  const getInvoiceForPayment = (paymentId: string) =>
+    cv.invoices.find((i) => i.paymentId === paymentId);
 
   const stepState = (idx: number) => {
     const steps = [
@@ -750,6 +1265,11 @@ function CollaborationDetailModal({
   const unpaidIssuable = cv.payments.filter(
     (p) => p.status === 'paid' && !isInvoiceIssued(p.id)
   );
+
+  const hasActiveException = cv.exception?.status === 'active';
+  const hasResolvedException = cv.exception?.status === 'resolved';
+
+  const [expandedPayment, setExpandedPayment] = useState<string | null>(null);
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
@@ -827,6 +1347,7 @@ function CollaborationDetailModal({
                       签署合同
                     </button>
                   ) : null,
+                  dueStatus: !cv.contractSigned ? cv.dueStatus : undefined,
                 },
                 {
                   key: 'deposit',
@@ -849,6 +1370,7 @@ function CollaborationDetailModal({
                         标记定金已付
                       </button>
                     ) : null,
+                  dueStatus: cv.stage === 'deposit_pending' ? cv.dueStatus : undefined,
                 },
                 {
                   key: 'kpi',
@@ -872,6 +1394,7 @@ function CollaborationDetailModal({
                       {cv.kpiStatus === 'pending' ? '抓取数据' : '查看报告'}
                     </button>
                   ),
+                  dueStatus: cv.stage === 'kpi_pending' ? cv.dueStatus : undefined,
                   extra: cv.performance?.lastFetchedAt ? (
                     <div className="mt-2 grid grid-cols-3 gap-2">
                       <KpiMiniBar
@@ -918,6 +1441,7 @@ function CollaborationDetailModal({
                         标记尾款已付
                       </button>
                     ) : null,
+                  dueStatus: cv.stage === 'final_pending' ? cv.dueStatus : undefined,
                 },
                 {
                   key: 'invoice',
@@ -937,6 +1461,7 @@ function CollaborationDetailModal({
                 },
               ].map((step, idx) => {
                 const state = stepState(idx);
+                const stepDueStatus = (step as any).dueStatus;
                 return (
                   <div key={step.key} className="flex gap-4">
                     <div className="flex flex-col items-center">
@@ -964,7 +1489,7 @@ function CollaborationDetailModal({
                     <div className="flex-1 pb-6">
                       <div className="flex items-center justify-between gap-3">
                         <div>
-                          <div className="flex items-center gap-2">
+                          <div className="flex items-center gap-2 flex-wrap">
                             <h4 className="font-semibold text-gray-800">{step.title}</h4>
                             {state === 'done' && (
                               <span className="text-xs px-2 py-0.5 rounded bg-success-100 text-success-700 font-medium">
@@ -974,6 +1499,18 @@ function CollaborationDetailModal({
                             {state === 'active' && (
                               <span className="text-xs px-2 py-0.5 rounded bg-primary-100 text-primary-700 font-medium">
                                 进行中
+                              </span>
+                            )}
+                            {stepDueStatus && (
+                              <span
+                                className={cn(
+                                  'text-xs px-2 py-0.5 rounded font-medium',
+                                  stepDueStatus.type === 'overdue'
+                                    ? 'bg-danger-100 text-danger-700'
+                                    : 'bg-amber-100 text-amber-700'
+                                )}
+                              >
+                                {stepDueStatus.type === 'overdue' ? '🔴' : '🟠'} {stepDueStatus.text}
                               </span>
                             )}
                           </div>
@@ -998,48 +1535,207 @@ function CollaborationDetailModal({
           <div>
             <h3 className="font-semibold text-gray-800 mb-3">付款历史</h3>
             <div className="space-y-2">
-              {cv.payments.map((p) => (
-                <div
-                  key={p.id}
-                  className="flex items-center justify-between p-3 bg-gray-50 rounded-lg"
-                >
-                  <div className="flex items-center gap-3">
+              {cv.payments.map((p) => {
+                const invoice = getInvoiceForPayment(p.id);
+                const isExpanded = expandedPayment === p.id;
+                return (
+                  <div key={p.id} className="bg-gray-50 rounded-lg overflow-hidden">
                     <div
-                      className={cn(
-                        'w-9 h-9 rounded-lg flex items-center justify-center',
-                        p.type === 'deposit'
-                          ? 'bg-blue-100 text-blue-600'
-                          : 'bg-purple-100 text-purple-600'
-                      )}
+                      onClick={() => setExpandedPayment(isExpanded ? null : p.id)}
+                      className="flex items-center justify-between p-3 cursor-pointer hover:bg-gray-100 transition-colors"
                     >
-                      <DollarSign className="w-4 h-4" />
-                    </div>
-                    <div>
-                      <div className="flex items-center gap-2">
-                        <span className="font-medium text-gray-800">
-                          {p.type === 'deposit' ? '定金' : '尾款'}
-                        </span>
-                        <Badge status={p.status} />
-                        {isInvoiceIssued(p.id) && (
-                          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-medium bg-green-100 text-green-700">
-                            <Receipt className="w-3 h-3" />
-                            已开票
-                          </span>
-                        )}
+                      <div className="flex items-center gap-3">
+                        <div
+                          className={cn(
+                            'w-9 h-9 rounded-lg flex items-center justify-center',
+                            p.type === 'deposit'
+                              ? 'bg-blue-100 text-blue-600'
+                              : 'bg-purple-100 text-purple-600'
+                          )}
+                        >
+                          <DollarSign className="w-4 h-4" />
+                        </div>
+                        <div>
+                          <div className="flex items-center gap-2 flex-wrap">
+                            <span className="font-medium text-gray-800">
+                              {p.type === 'deposit' ? '定金' : '尾款'}
+                            </span>
+                            <Badge status={p.status} />
+                            {isInvoiceIssued(p.id) ? (
+                              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-medium bg-green-100 text-green-700">
+                                <Receipt className="w-3 h-3" />
+                                已开票
+                              </span>
+                            ) : p.status === 'paid' ? (
+                              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-medium bg-amber-100 text-amber-700">
+                                <Receipt className="w-3 h-3" />
+                                待开票
+                              </span>
+                            ) : null}
+                          </div>
+                          <p className="text-xs text-gray-500">
+                            到期：{p.dueDate}
+                            {p.paidAt &&
+                              ` · 支付于 ${new Date(p.paidAt).toLocaleDateString('zh-CN')}`}
+                          </p>
+                        </div>
                       </div>
-                      <p className="text-xs text-gray-500">
-                        到期：{p.dueDate}
-                        {p.paidAt &&
-                          ` · 支付于 ${new Date(p.paidAt).toLocaleDateString('zh-CN')}`}
-                      </p>
+                      <div className="flex items-center gap-3">
+                        <span className="font-display font-bold text-gray-800">
+                          {formatMoney(p.amount)}
+                        </span>
+                        <ChevronRight
+                          className={cn(
+                            'w-4 h-4 text-gray-400 transition-transform',
+                            isExpanded ? 'rotate-90' : ''
+                          )}
+                        />
+                      </div>
                     </div>
+                    <AnimatePresence>
+                      {isExpanded && (
+                        <motion.div
+                          initial={{ height: 0, opacity: 0 }}
+                          animate={{ height: 'auto', opacity: 1 }}
+                          exit={{ height: 0, opacity: 0 }}
+                          className="overflow-hidden"
+                        >
+                          <div className="p-3 pt-0 border-t border-gray-200 mt-3">
+                            <div className="pt-3">
+                              <p className="text-sm font-medium text-gray-700 mb-2">发票信息</p>
+                              {invoice ? (
+                                <div className="bg-white rounded-lg p-3 space-y-2">
+                                  <div className="flex items-center justify-between">
+                                    <span className="text-sm text-gray-600">发票状态</span>
+                                    <span
+                                      className={cn(
+                                        'inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-medium',
+                                        invoice.status === 'issued'
+                                          ? 'bg-green-100 text-green-700'
+                                          : 'bg-gray-100 text-gray-700'
+                                      )}
+                                    >
+                                      {invoice.status === 'issued' ? '已开具' : '待开具'}
+                                    </span>
+                                  </div>
+                                  {invoice.issuedAt && (
+                                    <div className="flex items-center justify-between">
+                                      <span className="text-sm text-gray-600">开票时间</span>
+                                      <span className="text-sm text-gray-800">
+                                        {new Date(invoice.issuedAt).toLocaleDateString('zh-CN')}
+                                      </span>
+                                    </div>
+                                  )}
+                                  <div className="flex items-center justify-between">
+                                    <span className="text-sm text-gray-600">发票金额</span>
+                                    <span className="text-sm font-medium text-gray-800">
+                                      {formatMoney(invoice.amount)}
+                                    </span>
+                                  </div>
+                                </div>
+                              ) : p.status === 'paid' ? (
+                                <div className="bg-amber-50 rounded-lg p-3 flex items-center justify-between">
+                                  <div className="flex items-center gap-2">
+                                    <Receipt className="w-4 h-4 text-amber-500" />
+                                    <span className="text-sm text-amber-700">待开票</span>
+                                  </div>
+                                  <button
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      onIssueInvoice(p.id);
+                                    }}
+                                    className="btn-primary text-xs py-1.5 px-3"
+                                  >
+                                    <Receipt className="w-3.5 h-3.5" />
+                                    立即开票
+                                  </button>
+                                </div>
+                              ) : (
+                                <div className="bg-gray-100 rounded-lg p-3">
+                                  <p className="text-sm text-gray-500 text-center">
+                                    付款完成后可开具发票
+                                  </p>
+                                </div>
+                              )}
+                            </div>
+                          </div>
+                        </motion.div>
+                      )}
+                    </AnimatePresence>
                   </div>
-                  <span className="font-display font-bold text-gray-800">
-                    {formatMoney(p.amount)}
-                  </span>
-                </div>
-              ))}
+                );
+              })}
             </div>
+          </div>
+
+          <div>
+            <h3 className="font-semibold text-gray-800 mb-3">异常处理</h3>
+            {hasActiveException && cv.exception ? (
+              <div className="bg-danger-50 border border-danger-200 rounded-lg p-4">
+                <div className="flex items-start gap-3">
+                  <div className="w-10 h-10 bg-danger-100 rounded-full flex items-center justify-center flex-shrink-0">
+                    <AlertOctagon className="w-5 h-5 text-danger-600" />
+                  </div>
+                  <div className="flex-1">
+                    <div className="flex items-center gap-2 mb-2">
+                      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-medium bg-danger-100 text-danger-700">
+                        {exceptionTypeLabels[cv.exception.type]}
+                      </span>
+                      <span className="text-xs text-gray-500">
+                        创建于 {new Date(cv.exception.createdAt).toLocaleDateString('zh-CN')}
+                      </span>
+                    </div>
+                    <p className="text-sm text-gray-700 mb-3">{cv.exception.remark}</p>
+                    <button
+                      onClick={() => onMarkException(cv.invitation.id, 'resolve')}
+                      className="btn-primary text-xs py-1.5 px-3 bg-success-600 hover:bg-success-700"
+                    >
+                      <Check className="w-3.5 h-3.5" />
+                      解决异常
+                    </button>
+                  </div>
+                </div>
+              </div>
+            ) : hasResolvedException && cv.exception ? (
+              <div className="bg-gray-50 border border-gray-200 rounded-lg p-4">
+                <div className="flex items-center gap-3">
+                  <div className="w-10 h-10 bg-green-100 rounded-full flex items-center justify-center flex-shrink-0">
+                    <CheckCircle2 className="w-5 h-5 text-green-600" />
+                  </div>
+                  <div className="flex-1">
+                    <div className="flex items-center gap-2 mb-1">
+                      <span className="font-medium text-gray-800">异常已解决</span>
+                      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-medium bg-gray-200 text-gray-700">
+                        {exceptionTypeLabels[cv.exception.type]}
+                      </span>
+                    </div>
+                    <p className="text-xs text-gray-500">
+                      {cv.exception.resolvedAt
+                        ? `解决于 ${new Date(cv.exception.resolvedAt).toLocaleDateString('zh-CN')}`
+                        : ''}
+                    </p>
+                  </div>
+                </div>
+              </div>
+            ) : (
+              <div className="bg-gray-50 border border-gray-200 rounded-lg p-4">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-3">
+                    <div className="w-10 h-10 bg-gray-200 rounded-full flex items-center justify-center flex-shrink-0">
+                      <CheckCircle2 className="w-5 h-5 text-gray-400" />
+                    </div>
+                    <span className="text-gray-500">暂无异常</span>
+                  </div>
+                  <button
+                    onClick={() => onMarkException(cv.invitation.id, 'create')}
+                    className="btn-secondary text-xs py-1.5 px-3 text-amber-600 border-amber-200 hover:bg-amber-50"
+                  >
+                    <AlertTriangle className="w-3.5 h-3.5" />
+                    标记异常
+                  </button>
+                </div>
+              </div>
+            )}
           </div>
 
           <div className="flex justify-end gap-2 pt-2 border-t border-gray-100">

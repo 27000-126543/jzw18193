@@ -1,13 +1,16 @@
-import { useState, useMemo, useCallback } from 'react';
+import { useState, useMemo, useCallback, useEffect } from 'react';
 import { useShallow } from 'zustand/shallow';
 import { motion } from 'framer-motion';
 import { useNavigate } from 'react-router-dom';
 import { useAppStore } from '@/store/useAppStore';
 import { formatNumber, formatPercent, formatMoney } from '@/utils';
+import type { KOL } from '@/types';
 import Card from '@/components/ui/Card';
+import PlatformBadge from '@/components/ui/PlatformBadge';
 import {
   BarChart3,
   TrendingUp,
+  TrendingDown,
   Eye,
   Heart,
   MousePointerClick,
@@ -15,6 +18,7 @@ import {
   Download,
   Filter,
   ChevronRight,
+  ChevronDown,
   Star,
   RefreshCw,
   Clock,
@@ -22,6 +26,8 @@ import {
   XCircle,
   ArrowRight,
   Wallet,
+  Users,
+  Minus,
 } from 'lucide-react';
 import {
   BarChart,
@@ -36,10 +42,11 @@ import {
 
 export default function Reports() {
   const navigate = useNavigate();
-  const { performanceData, fetchPerformanceData, getPaymentsByInvitationId, checkKpiMet } =
+  const { performanceData, kols, fetchPerformanceData, getPaymentsByInvitationId, checkKpiMet } =
     useAppStore(
       useShallow((state) => ({
         performanceData: state.performanceData,
+        kols: state.kols,
         fetchPerformanceData: state.fetchPerformanceData,
         getPaymentsByInvitationId: state.getPaymentsByInvitationId,
         checkKpiMet: state.checkKpiMet,
@@ -47,6 +54,15 @@ export default function Reports() {
     );
   const [selectedPeriod, setSelectedPeriod] = useState<'7d' | '30d' | '90d'>('30d');
   const [fetchingId, setFetchingId] = useState<string | null>(null);
+  const [view, setView] = useState<'list' | 'comparison'>('list');
+  const [selectedKolName, setSelectedKolName] = useState<string | null>(null);
+  const [chartMetric, setChartMetric] = useState<'impressions' | 'engagements' | 'clicks' | 'roi'>('impressions');
+  const [showKolDropdown, setShowKolDropdown] = useState(false);
+
+  const calcDiff = (value: number, avg: number) => {
+    if (avg === 0) return 0;
+    return ((value - avg) / avg) * 100;
+  };
 
   const handleFetchData = useCallback(
     async (contentId: string) => {
@@ -90,6 +106,71 @@ export default function Reports() {
   );
 
   const barColors = ['#416EA4', '#FF6B35', '#10B981', '#8B5CF6', '#F59E0B'];
+
+  const kolComparisons = useMemo(() => {
+    const map = new Map<string, {
+      kolName: string;
+      kol?: KOL;
+      campaigns: typeof performanceData;
+    }>();
+
+    performanceData.forEach((p) => {
+      if (!p.kolName) return;
+      if (!map.has(p.kolName)) {
+        const kol = kols.find((k) => k.name === p.kolName);
+        map.set(p.kolName, { kolName: p.kolName, kol, campaigns: [] });
+      }
+      map.get(p.kolName)!.campaigns.push({ ...p });
+    });
+
+    return Array.from(map.values())
+      .filter((k) => k.campaigns.length >= 2)
+      .sort((a, b) => b.campaigns.length - a.campaigns.length);
+  }, [performanceData, kols]);
+
+  useEffect(() => {
+    if (kolComparisons.length > 0 && !selectedKolName) {
+      setSelectedKolName(kolComparisons[0].kolName);
+    }
+  }, [kolComparisons, selectedKolName]);
+
+  const selectedKolData = useMemo(() => {
+    if (!selectedKolName) return null;
+    return kolComparisons.find((k) => k.kolName === selectedKolName) || null;
+  }, [selectedKolName, kolComparisons]);
+
+  const kolAvgStats = useMemo(() => {
+    if (!selectedKolData) return null;
+    const { campaigns } = selectedKolData;
+    const count = campaigns.length;
+    return {
+      avgImpressions: campaigns.reduce((sum, p) => sum + p.impressions, 0) / count,
+      avgEngagements: campaigns.reduce((sum, p) => sum + p.engagements, 0) / count,
+      avgClicks: campaigns.reduce((sum, p) => sum + p.clicks, 0) / count,
+      avgRoi: campaigns.reduce((sum, p) => sum + p.roi, 0) / count,
+      totalCampaigns: count,
+    };
+  }, [selectedKolData]);
+
+  const sortedCampaigns = useMemo(() => {
+    if (!selectedKolData) return [];
+    return [...selectedKolData.campaigns].sort((a, b) => {
+      const dateA = a.lastFetchedAt || a.collectedAt;
+      const dateB = b.lastFetchedAt || b.collectedAt;
+      return new Date(dateB).getTime() - new Date(dateA).getTime();
+    });
+  }, [selectedKolData]);
+
+  const comparisonChartData = useMemo(() => {
+    return sortedCampaigns.map((p) => ({
+      name: p.campaignName?.slice(0, 4) || '-',
+      fullName: p.campaignName || '-',
+      impressions: p.impressions / 10000,
+      engagements: p.engagements / 10000,
+      clicks: p.clicks / 10000,
+      roi: p.roi,
+    }));
+  }, [sortedCampaigns]);
 
   const fetchedCount = performanceData.filter((p) => p.lastFetchedAt).length;
   const dataSourceText =
@@ -140,8 +221,459 @@ export default function Reports() {
         </div>
       </div>
 
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
-        <Card className="p-6">
+      <div className="flex bg-white rounded-xl border border-gray-200 p-1.5 w-fit">
+        <button
+          onClick={() => setView('list')}
+          className={`px-6 py-2.5 rounded-lg text-sm font-medium transition-all ${
+            view === 'list'
+              ? 'bg-primary-600 text-white shadow-sm'
+              : 'text-gray-600 hover:bg-gray-50'
+          }`}
+        >
+          全部报告
+        </button>
+        <button
+          onClick={() => setView('comparison')}
+          className={`px-6 py-2.5 rounded-lg text-sm font-medium transition-all flex items-center gap-2 ${
+            view === 'comparison'
+              ? 'bg-primary-600 text-white shadow-sm'
+              : 'text-gray-600 hover:bg-gray-50'
+          }`}
+        >
+          <BarChart3 className="w-4 h-4" />
+          KOL对比
+        </button>
+      </div>
+
+      {view === 'comparison' && (
+        <div className="space-y-6">
+          {kolComparisons.length === 0 ? (
+            <Card className="p-12 text-center">
+              <div className="w-16 h-16 bg-gray-100 rounded-full flex items-center justify-center mx-auto mb-4">
+                <Users className="w-8 h-8 text-gray-400" />
+              </div>
+              <h3 className="font-display font-semibold text-lg text-gray-800 mb-2">
+                暂无多次合作的KOL
+              </h3>
+              <p className="text-gray-500">
+                当有KOL与您合作2次及以上时，可在此处查看跨活动表现对比
+              </p>
+            </Card>
+          ) : (
+            <>
+              <Card className="p-6">
+                <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 mb-6">
+                  <h3 className="font-display font-semibold text-lg text-gray-800 flex items-center gap-2">
+                    <Users className="w-5 h-5 text-primary-600" />
+                    选择对比的KOL
+                  </h3>
+                  <div className="relative">
+                    <button
+                      onClick={() => setShowKolDropdown(!showKolDropdown)}
+                      className="flex items-center gap-3 px-4 py-2.5 bg-white border border-gray-200 rounded-lg hover:bg-gray-50 transition-colors min-w-[280px]"
+                    >
+                      {selectedKolData && (
+                        <>
+                          <img
+                            src={selectedKolData.kol?.avatar || `https://i.pravatar.cc/40?u=${selectedKolData.kolName}`}
+                            alt={selectedKolData.kolName}
+                            className="w-8 h-8 rounded-full"
+                          />
+                          <div className="flex-1 text-left">
+                            <div className="font-medium text-gray-800">{selectedKolData.kolName}</div>
+                            <div className="flex items-center gap-2">
+                              {selectedKolData.kol && (
+                                <PlatformBadge platform={selectedKolData.kol.platform} />
+                              )}
+                              <span className="text-xs text-gray-500">
+                                共 {selectedKolData.campaigns.length} 次合作
+                              </span>
+                            </div>
+                          </div>
+                        </>
+                      )}
+                      <ChevronDown className={`w-4 h-4 text-gray-400 transition-transform ${showKolDropdown ? 'rotate-180' : ''}`} />
+                    </button>
+                    {showKolDropdown && (
+                      <div className="absolute top-full right-0 mt-2 w-[320px] bg-white border border-gray-200 rounded-xl shadow-lg z-50 max-h-80 overflow-y-auto">
+                        {kolComparisons.map((kol) => (
+                          <button
+                            key={kol.kolName}
+                            onClick={() => {
+                              setSelectedKolName(kol.kolName);
+                              setShowKolDropdown(false);
+                            }}
+                            className={`w-full flex items-center gap-3 px-4 py-3 hover:bg-gray-50 transition-colors text-left ${
+                              selectedKolName === kol.kolName ? 'bg-primary-50' : ''
+                            }`}
+                          >
+                            <img
+                              src={kol.kol?.avatar || `https://i.pravatar.cc/40?u=${kol.kolName}`}
+                              alt={kol.kolName}
+                              className="w-9 h-9 rounded-full"
+                            />
+                            <div className="flex-1">
+                              <div className="font-medium text-gray-800">{kol.kolName}</div>
+                              <div className="flex items-center gap-2">
+                                {kol.kol && (
+                                  <PlatformBadge platform={kol.kol.platform} />
+                                )}
+                                <span className="text-xs text-gray-500">
+                                  {kol.campaigns.length} 次合作
+                                </span>
+                              </div>
+                            </div>
+                            {selectedKolName === kol.kolName && (
+                              <CheckCircle2 className="w-5 h-5 text-primary-600" />
+                            )}
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              </Card>
+
+              {kolAvgStats && (
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-6">
+                  <Card className="p-6">
+                    <div className="flex items-center justify-between mb-4">
+                      <div className="w-12 h-12 bg-primary-100 rounded-xl flex items-center justify-center">
+                        <Eye className="w-6 h-6 text-primary-600" />
+                      </div>
+                    </div>
+                    <p className="text-sm text-gray-500 mb-1">平均曝光量</p>
+                    <p className="font-display font-bold text-2xl text-gray-800">
+                      {formatNumber(kolAvgStats.avgImpressions)}
+                    </p>
+                    <p className="text-xs text-gray-400 mt-2">
+                      共 {kolAvgStats.totalCampaigns} 次合作
+                    </p>
+                  </Card>
+
+                  <Card className="p-6">
+                    <div className="flex items-center justify-between mb-4">
+                      <div className="w-12 h-12 bg-accent-100 rounded-xl flex items-center justify-center">
+                        <Heart className="w-6 h-6 text-accent-600" />
+                      </div>
+                    </div>
+                    <p className="text-sm text-gray-500 mb-1">平均互动量</p>
+                    <p className="font-display font-bold text-2xl text-gray-800">
+                      {formatNumber(kolAvgStats.avgEngagements)}
+                    </p>
+                    <p className="text-xs text-gray-400 mt-2">
+                      共 {kolAvgStats.totalCampaigns} 次合作
+                    </p>
+                  </Card>
+
+                  <Card className="p-6">
+                    <div className="flex items-center justify-between mb-4">
+                      <div className="w-12 h-12 bg-success-100 rounded-xl flex items-center justify-center">
+                        <MousePointerClick className="w-6 h-6 text-success-600" />
+                      </div>
+                    </div>
+                    <p className="text-sm text-gray-500 mb-1">平均点击量</p>
+                    <p className="font-display font-bold text-2xl text-gray-800">
+                      {formatNumber(kolAvgStats.avgClicks)}
+                    </p>
+                    <p className="text-xs text-gray-400 mt-2">
+                      共 {kolAvgStats.totalCampaigns} 次合作
+                    </p>
+                  </Card>
+
+                  <Card className="p-6">
+                    <div className="flex items-center justify-between mb-4">
+                      <div className="w-12 h-12 bg-purple-100 rounded-xl flex items-center justify-center">
+                        <BarChart3 className="w-6 h-6 text-purple-600" />
+                      </div>
+                    </div>
+                    <p className="text-sm text-gray-500 mb-1">平均 ROI</p>
+                    <p className="font-display font-bold text-2xl text-gray-800">
+                      {kolAvgStats.avgRoi.toFixed(2)}x
+                    </p>
+                    <p className="text-xs text-gray-400 mt-2">
+                      共 {kolAvgStats.totalCampaigns} 次合作
+                    </p>
+                  </Card>
+
+                  <Card className="p-6">
+                    <div className="flex items-center justify-between mb-4">
+                      <div className="w-12 h-12 bg-amber-100 rounded-xl flex items-center justify-center">
+                        <Users className="w-6 h-6 text-amber-600" />
+                      </div>
+                    </div>
+                    <p className="text-sm text-gray-500 mb-1">合作次数</p>
+                    <p className="font-display font-bold text-2xl text-gray-800">
+                      {kolAvgStats.totalCampaigns}
+                    </p>
+                    <p className="text-xs text-gray-400 mt-2">
+                      累计合作记录
+                    </p>
+                  </Card>
+                </div>
+              )}
+
+              <Card className="p-6 lg:col-span-2">
+                <div className="flex items-center justify-between mb-6">
+                  <h3 className="font-display font-semibold text-lg text-gray-800 flex items-center gap-2">
+                    <BarChart3 className="w-5 h-5 text-primary-600" />
+                    多活动表现对比
+                  </h3>
+                  <div className="flex gap-2">
+                    {(['impressions', 'engagements', 'clicks', 'roi'] as const).map((metric) => (
+                      <button
+                        key={metric}
+                        onClick={() => setChartMetric(metric)}
+                        className={`px-3 py-1.5 rounded-lg text-sm font-medium transition-colors ${
+                          chartMetric === metric
+                            ? 'bg-primary-700 text-white'
+                            : 'text-gray-500 hover:bg-gray-100'
+                        }`}
+                      >
+                        {metric === 'impressions' ? '曝光量' : metric === 'engagements' ? '互动量' : metric === 'clicks' ? '点击量' : 'ROI'}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+                <div className="h-80">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <BarChart data={comparisonChartData}>
+                      <CartesianGrid
+                        strokeDasharray="3 3"
+                        stroke="#F1F5F9"
+                        horizontal={true}
+                        vertical={false}
+                      />
+                      <XAxis
+                        dataKey="name"
+                        tick={{ fontSize: 12, fill: '#64748B' }}
+                        axisLine={false}
+                        tickLine={false}
+                      />
+                      <YAxis
+                        tick={{ fontSize: 12, fill: '#94A3B8' }}
+                        axisLine={false}
+                        tickLine={false}
+                      />
+                      <Tooltip
+                        contentStyle={{
+                          backgroundColor: 'white',
+                          border: 'none',
+                          borderRadius: '12px',
+                          boxShadow: '0 4px 20px rgba(0,0,0,0.1)',
+                        }}
+                        formatter={(value: number) => {
+                          if (chartMetric === 'roi') {
+                            return [`${value.toFixed(2)}x`, 'ROI'];
+                          }
+                          return [`${formatNumber(value * 10000)}`, chartMetric === 'impressions' ? '曝光量' : chartMetric === 'engagements' ? '互动量' : '点击量'];
+                        }}
+                        labelFormatter={(label, payload) => {
+                          if (payload && payload[0]) {
+                            return payload[0].payload.fullName;
+                          }
+                          return label;
+                        }}
+                      />
+                      <Bar dataKey={chartMetric} radius={[8, 8, 0, 0]}>
+                        {comparisonChartData.map((_, index) => (
+                          <Cell key={`cell-${index}`} fill={barColors[index % barColors.length]} />
+                        ))}
+                      </Bar>
+                    </BarChart>
+                  </ResponsiveContainer>
+                </div>
+              </Card>
+
+              <Card className="p-6">
+                <div className="flex items-center justify-between mb-6">
+                  <h3 className="font-display font-semibold text-lg text-gray-800 flex items-center gap-2">
+                    <Target className="w-5 h-5 text-primary-600" />
+                    各活动KPI达标情况
+                  </h3>
+                </div>
+                <div className="space-y-4 max-h-80 overflow-y-auto pr-2">
+                  {sortedCampaigns.map((perf, index) => {
+                    const kpiResult = checkKpiMet(perf.contentId);
+                    const kpiStatus = kpiResult.fetched ? (kpiResult.ok ? 'met' : 'not_met') : 'pending';
+                    
+                    return (
+                      <motion.div
+                        key={perf.id}
+                        initial={{ opacity: 0, x: 20 }}
+                        animate={{ opacity: 1, x: 0 }}
+                        transition={{ delay: index * 0.1 }}
+                        className="p-4 rounded-lg bg-gray-50 hover:bg-gray-100 transition-colors"
+                      >
+                        <div className="flex items-center justify-between mb-3">
+                          <div className="flex-1 min-w-0">
+                            <p className="font-medium text-gray-800 truncate">
+                              {perf.campaignName}
+                            </p>
+                            <p className="text-xs text-gray-500 mt-0.5">
+                              {perf.lastFetchedAt
+                                ? new Date(perf.lastFetchedAt).toLocaleDateString('zh-CN')
+                                : '未抓取'}
+                            </p>
+                          </div>
+                          {kpiStatus === 'met' && (
+                            <span className="text-xs inline-flex items-center gap-1 px-2 py-0.5 rounded bg-success-100 text-success-700 font-medium whitespace-nowrap ml-2">
+                              <CheckCircle2 className="w-3 h-3" /> 全达标
+                            </span>
+                          )}
+                          {kpiStatus === 'not_met' && (
+                            <span className="text-xs inline-flex items-center gap-1 px-2 py-0.5 rounded bg-danger-100 text-danger-700 font-medium whitespace-nowrap ml-2">
+                              <XCircle className="w-3 h-3" /> 未达标
+                            </span>
+                          )}
+                          {kpiStatus === 'pending' && (
+                            <span className="text-xs inline-flex items-center gap-1 px-2 py-0.5 rounded bg-gray-100 text-gray-500 font-medium whitespace-nowrap ml-2">
+                              <Clock className="w-3 h-3" /> 待抓取
+                            </span>
+                          )}
+                        </div>
+                        {kpiResult.fetched && (
+                          <div className="grid grid-cols-3 gap-2 text-center">
+                            <div>
+                              <p className="text-[10px] text-gray-500">曝光</p>
+                              <p className={`text-sm font-bold ${kpiResult.impressionsRate >= 100 ? 'text-success-600' : 'text-accent-600'}`}>
+                                {kpiResult.impressionsRate}%
+                              </p>
+                            </div>
+                            <div>
+                              <p className="text-[10px] text-gray-500">互动</p>
+                              <p className={`text-sm font-bold ${kpiResult.engagementsRate >= 100 ? 'text-success-600' : 'text-accent-600'}`}>
+                                {kpiResult.engagementsRate}%
+                              </p>
+                            </div>
+                            <div>
+                              <p className="text-[10px] text-gray-500">点击</p>
+                              <p className={`text-sm font-bold ${kpiResult.clicksRate >= 100 ? 'text-success-600' : 'text-accent-600'}`}>
+                                {kpiResult.clicksRate}%
+                              </p>
+                            </div>
+                          </div>
+                        )}
+                      </motion.div>
+                    );
+                  })}
+                </div>
+              </Card>
+
+              <Card className="p-6">
+                <div className="flex items-center justify-between mb-6">
+                  <h3 className="font-display font-semibold text-lg text-gray-800">
+                    多次合作横向对比
+                  </h3>
+                </div>
+
+                <div className="overflow-x-auto">
+                  <table className="w-full">
+                    <thead>
+                      <tr className="border-b border-gray-100">
+                        <th className="text-left py-4 px-4 text-sm font-medium text-gray-500">活动名称</th>
+                        <th className="text-left py-4 px-4 text-sm font-medium text-gray-500">合作日期</th>
+                        <th className="text-right py-4 px-4 text-sm font-medium text-gray-500">曝光量</th>
+                        <th className="text-right py-4 px-4 text-sm font-medium text-gray-500">互动量</th>
+                        <th className="text-right py-4 px-4 text-sm font-medium text-gray-500">点击量</th>
+                        <th className="text-right py-4 px-4 text-sm font-medium text-gray-500">ROI</th>
+                        <th className="text-center py-4 px-4 text-sm font-medium text-gray-500">达标情况</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {sortedCampaigns.map((perf, index) => {
+                        const kpiResult = checkKpiMet(perf.contentId);
+                        const kpiStatus = kpiResult.fetched ? (kpiResult.ok ? 'met' : 'not_met') : 'pending';
+                        const isEven = index % 2 === 0;
+                        
+                        return (
+                          <motion.tr
+                            key={perf.id}
+                            initial={{ opacity: 0 }}
+                            animate={{ opacity: 1 }}
+                            transition={{ delay: index * 0.05 }}
+                            className={`border-b border-gray-50 transition-colors ${isEven ? 'bg-gray-50/50' : 'bg-white'} hover:bg-gray-100`}
+                          >
+                            <td className="py-4 px-4">
+                              <p className="font-medium text-gray-800 truncate max-w-[200px]">
+                                {perf.campaignName}
+                              </p>
+                            </td>
+                            <td className="py-4 px-4 text-sm text-gray-600">
+                              {perf.lastFetchedAt
+                                ? new Date(perf.lastFetchedAt).toLocaleDateString('zh-CN')
+                                : '-'}
+                            </td>
+                            <td className="py-4 px-4 text-right">
+                              <div className="font-mono text-sm text-gray-800">
+                                {formatNumber(perf.impressions)}
+                              </div>
+                              {kolAvgStats && perf.lastFetchedAt && (
+                                <DiffIndicator value={perf.impressions} avg={kolAvgStats.avgImpressions} />
+                              )}
+                            </td>
+                            <td className="py-4 px-4 text-right">
+                              <div className="font-mono text-sm text-gray-800">
+                                {formatNumber(perf.engagements)}
+                              </div>
+                              {kolAvgStats && perf.lastFetchedAt && (
+                                <DiffIndicator value={perf.engagements} avg={kolAvgStats.avgEngagements} />
+                              )}
+                            </td>
+                            <td className="py-4 px-4 text-right">
+                              <div className="font-mono text-sm text-gray-800">
+                                {formatNumber(perf.clicks)}
+                              </div>
+                              {kolAvgStats && perf.lastFetchedAt && (
+                                <DiffIndicator value={perf.clicks} avg={kolAvgStats.avgClicks} />
+                              )}
+                            </td>
+                            <td className="py-4 px-4 text-right">
+                              <div className={`font-mono font-bold ${
+                                perf.roi >= 3 ? 'text-success-600' : 'text-accent-600'
+                              }`}>
+                                {perf.roi.toFixed(2)}x
+                              </div>
+                              {kolAvgStats && perf.lastFetchedAt && (
+                                <DiffIndicator value={perf.roi} avg={kolAvgStats.avgRoi} isRoi />
+                              )}
+                            </td>
+                            <td className="py-4 px-4 text-center">
+                              {kpiStatus === 'met' && (
+                                <span className="inline-flex items-center gap-1 text-success-600 text-sm font-medium">
+                                  <CheckCircle2 className="w-4 h-4" />
+                                  全达标
+                                </span>
+                              )}
+                              {kpiStatus === 'not_met' && (
+                                <span className="inline-flex items-center gap-1 text-danger-600 text-sm font-medium">
+                                  <XCircle className="w-4 h-4" />
+                                  未达标
+                                </span>
+                              )}
+                              {kpiStatus === 'pending' && (
+                                <span className="inline-flex items-center gap-1 text-gray-400 text-sm font-medium">
+                                  <Clock className="w-4 h-4" />
+                                  待抓取
+                                </span>
+                              )}
+                            </td>
+                          </motion.tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              </Card>
+            </>
+          )}
+        </div>
+      )}
+
+      {view === 'list' && (
+        <>
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+            <Card className="p-6">
           <div className="flex items-center justify-between mb-4">
             <div className="w-12 h-12 bg-primary-100 rounded-xl flex items-center justify-center">
               <Eye className="w-6 h-6 text-primary-600" />
@@ -208,9 +740,9 @@ export default function Reports() {
           </p>
           <p className="text-xs text-gray-400 mt-2">{dataSourceText}</p>
         </Card>
-      </div>
+        </div>
 
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
         <Card className="p-6 lg:col-span-2">
           <div className="flex items-center justify-between mb-6">
             <h3 className="font-display font-semibold text-lg text-gray-800">ROI 排行榜</h3>
@@ -565,6 +1097,47 @@ export default function Reports() {
           </table>
         </div>
       </Card>
+        </>
+      )}
+    </div>
+  );
+}
+
+function DiffIndicator({ value, avg, isRoi = false }: { value: number; avg: number; isRoi?: boolean }) {
+  if (avg === 0) {
+    return (
+      <div className="flex items-center justify-end gap-0.5 text-xs text-gray-400 mt-0.5">
+        <Minus className="w-3 h-3" />
+        <span>-</span>
+      </div>
+    );
+  }
+  
+  const diff = ((value - avg) / avg) * 100;
+  const absDiff = Math.abs(diff);
+  
+  if (diff === 0) {
+    return (
+      <div className="flex items-center justify-end gap-0.5 text-xs text-gray-400 mt-0.5">
+        <Minus className="w-3 h-3" />
+        <span>持平</span>
+      </div>
+    );
+  }
+  
+  if (diff > 0) {
+    return (
+      <div className="flex items-center justify-end gap-0.5 text-xs text-success-600 mt-0.5">
+        <TrendingUp className="w-3 h-3" />
+        <span>+{absDiff.toFixed(1)}%</span>
+      </div>
+    );
+  }
+  
+  return (
+    <div className="flex items-center justify-end gap-0.5 text-xs text-danger-600 mt-0.5">
+      <TrendingDown className="w-3 h-3" />
+      <span>-{absDiff.toFixed(1)}%</span>
     </div>
   );
 }

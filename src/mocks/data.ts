@@ -132,6 +132,18 @@ function generateInvitations(kols: KOL[], campaigns: Campaign[]): Invitation[] {
     const publishDate = new Date(createdAt);
     publishDate.setDate(publishDate.getDate() + 15 + Math.floor(Math.random() * 15));
 
+    let exception: Invitation['exception'] = null;
+    if (i === 2 || i === 5) {
+      const exceptionCreatedAt = new Date(createdAt);
+      exceptionCreatedAt.setDate(exceptionCreatedAt.getDate() + 3);
+      exception = {
+        type: i === 2 ? 'communication_break' : 'data_anomaly',
+        status: 'active',
+        remark: i === 2 ? 'KOL 联系不上，电话微信均未回复' : '数据抓取异常，需要重新核实',
+        createdAt: exceptionCreatedAt.toISOString(),
+      };
+    }
+
     invitations.push({
       id: `invitation-${i + 1}`,
       campaignId: campaign.id,
@@ -144,6 +156,7 @@ function generateInvitations(kols: KOL[], campaigns: Campaign[]): Invitation[] {
       timeline: '签约后3天内提交初稿，确认后7天内发布',
       createdAt: createdAt.toISOString(),
       publishDate: publishDate.toISOString().split('T')[0],
+      exception,
     });
   }
 

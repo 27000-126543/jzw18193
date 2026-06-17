@@ -7,6 +7,10 @@ export type PaymentStatus = 'pending' | 'paid' | 'overdue';
 export type PaymentType = 'deposit' | 'final';
 export type ContractStatus = 'unsigned' | 'signed' | 'archived';
 export type InvoiceStatus = 'pending' | 'issued' | 'received';
+export type ExceptionType = 'communication_break' | 'data_anomaly' | 'need_reconfirm' | 'other';
+export type ExceptionStatus = 'active' | 'resolved';
+export type TodoType = 'sign_contract' | 'pay_deposit' | 'pay_final' | 'review_content' | 'fetch_data';
+export type TodoPriority = 'high' | 'medium' | 'low';
 
 export interface KOL {
   id: string;
@@ -57,6 +61,13 @@ export interface Invitation {
   timeline: string;
   createdAt: string;
   publishDate?: string;
+  exception?: {
+    type: ExceptionType;
+    status: ExceptionStatus;
+    remark: string;
+    createdAt: string;
+    resolvedAt?: string;
+  } | null;
 }
 
 export interface ContentReview {
@@ -101,6 +112,7 @@ export interface Payment {
   status: PaymentStatus;
   dueDate: string;
   paidAt?: string;
+  invoice?: Invoice;
 }
 
 export interface CollaborationHistory {
@@ -192,4 +204,34 @@ export interface CollaborationPayment {
   performance?: PerformanceData;
   currentStage: 'unsigned' | 'deposit_pending' | 'deposit_paid' | 'final_pending' | 'kpi_pending' | 'completed';
   kpiStatus: 'no_data' | 'not_fetched' | 'not_met' | 'met';
+  exception?: Invitation['exception'];
+  todos: Array<{
+    type: TodoType;
+    title: string;
+    priority: TodoPriority;
+    dueDate?: string;
+    done: boolean;
+  }>;
+  isOverdue?: boolean;
+  overdueDays?: number;
+}
+
+export interface KOLComparisonData {
+  kolId: string;
+  kolName: string;
+  platform: Platform;
+  campaigns: Array<{
+    campaignId: string;
+    campaignName: string;
+    impressions: number;
+    engagements: number;
+    clicks: number;
+    roi: number;
+    date: string;
+  }>;
+  avgImpressions: number;
+  avgEngagements: number;
+  avgClicks: number;
+  avgRoi: number;
+  totalCollaborations: number;
 }

@@ -13,6 +13,11 @@ import type {
   Contract,
   Invoice,
   CollaborationPayment,
+  ExceptionType,
+  ExceptionStatus,
+  TodoType,
+  TodoPriority,
+  KOLComparisonData,
 } from '../types';
 import {
   mockKOLs,
@@ -142,6 +147,31 @@ interface AppState {
   };
 
   getCollaborationPayments: () => CollaborationPayment[];
+
+  setException: (invitationId: string, exception: { type: ExceptionType; remark: string } | null) => Promise<void>;
+  resolveException: (invitationId: string, remark?: string) => Promise<void>;
+
+  getTodos: () => Array<{
+    id: string;
+    type: TodoType;
+    title: string;
+    priority: TodoPriority;
+    dueDate?: string;
+    invitationId: string;
+    kolName?: string;
+    campaignName?: string;
+    daysUntilDue?: number;
+  }>;
+
+  duplicateCollaboration: (invitationId: string) => Promise<{
+    invitation: Omit<Invitation, 'id' | 'createdAt' | 'status'>;
+    payments: Array<Omit<Payment, 'id' | 'invitationId' | 'status' | 'paidAt'>>;
+    contentRequirements: string;
+  }>;
+
+  getKOLComparison: (kolId?: string) => KOLComparisonData[];
+
+  getInvoiceByPaymentId: (paymentId: string) => Invoice | undefined;
 
   ensureDataConsistency: () => void;
 }
@@ -659,6 +689,68 @@ export const useAppStore = create<AppState>()((set, get) => ({
         kpiStatus = kpiResult.ok ? 'met' : 'not_met';
       }
 
+      const now = new Date();
+      const todos: CollaborationPayment['todos'] = [];
+
+      switch (currentStage) {
+        case 'unsigned':
+          todos.push({
+            type: 'sign_contract',
+            title: '签署合作合同',
+            priority: 'high',
+            dueDate: new Date(now.getTime() + 3 * 24 * 60 * 60 * 1000).toISOString().split('T')[0],
+            done: false,
+          });
+          break;
+        case 'deposit_pending':
+          todos.push({
+            type: 'pay_deposit',
+            title: '支付首付款',
+            priority: 'high',
+            dueDate: new Date(now.getTime() + 3 * 24 * 60 * 60 * 1000).toISOString().split('T')[0],
+            done: false,
+          });
+          break;
+        case 'kpi_pending':
+          todos.push({
+            type: 'fetch_data',
+            title: '抓取效果数据',
+            priority: 'medium',
+            done: false,
+          });
+          break;
+        case 'final_pending':
+          todos.push({
+            type: 'pay_final',
+            title: '支付尾款',
+            priority: 'high',
+            dueDate: new Date(now.getTime() + 3 * 24 * 60 * 60 * 1000).toISOString().split('T')[0],
+            done: false,
+          });
+          break;
+      }
+
+      const pendingReviews = state.getReviewsByInvitationId(invitationId).filter(
+        (r) => r.status === 'pending'
+      );
+      if (pendingReviews.length > 0) {
+        todos.push({
+          type: 'review_content',
+          title: `审核内容（${pendingReviews.length}条待审）`,
+          priority: 'high',
+          done: false,
+        });
+      }
+
+      let isOverdue: boolean | undefined;
+      let overdueDays: number | undefined;
+
+      if (invitation?.publishDate) {
+        const publish = new Date(invitation.publishDate);
+        overdueDays = Math.ceil((now.getTime() - publish.getTime()) / (1000 * 60 * 60 * 24));
+        isOverdue = overdueDays > 7;
+      }
+
       result.push({
         invitationId,
         kolName: invitation?.kolName,
@@ -672,6 +764,10 @@ export const useAppStore = create<AppState>()((set, get) => ({
         performance,
         currentStage,
         kpiStatus,
+        exception: invitation?.exception,
+        todos,
+        isOverdue,
+        overdueDays,
       });
     });
 
@@ -680,6 +776,275 @@ export const useAppStore = create<AppState>()((set, get) => ({
       const dateB = b.contract?.createdAt || b.deposit?.dueDate || '';
       return dateB.localeCompare(dateA);
     });
+  },
+
+  setException: async (invitationId, exception) => {
+    await delay(300);
+    set((state) => {
+      const invitations = state.invitations.map((inv) => {
+        if (inv.id !== invitationId) return inv;
+        if (exception === null) {
+          return { ...inv, exception: null };
+        }
+        return {
+          ...inv,
+          exception: {
+            type: exception.type,
+            status: 'active' as ExceptionStatus,
+            remark: exception.remark,
+            createdAt: new Date().toISOString(),
+          },
+        };
+      });
+      saveToStorage('invitations', invitations);
+      return { invitations };
+    });
+  },
+
+  resolveException: async (invitationId, remark) => {
+    await delay(300);
+    set((state) => {
+      const invitations = state.invitations.map((inv) => {
+        if (inv.id !== invitationId || !inv.exception) return inv;
+        return {
+          ...inv,
+          exception: {
+            ...inv.exception,
+            status: 'resolved' as ExceptionStatus,
+            remark: remark || inv.exception.remark,
+            resolvedAt: new Date().toISOString(),
+          },
+        };
+      });
+      saveToStorage('invitations', invitations);
+      return { invitations };
+    });
+  },
+
+  getTodos: () => {
+    const state = get();
+    const collaborations = state.getCollaborationPayments();
+    const todos: Array<{
+      id: string;
+      type: TodoType;
+      title: string;
+      priority: TodoPriority;
+      dueDate?: string;
+      invitationId: string;
+      kolName?: string;
+      campaignName?: string;
+      daysUntilDue?: number;
+    }> = [];
+
+    const now = new Date();
+
+    collaborations.forEach((collab) => {
+      const { invitationId, kolName, campaignName, currentStage, publishDate } = collab;
+      const todoItems: Array<{
+        type: TodoType;
+        title: string;
+        priority: TodoPriority;
+        dueDate?: string;
+      }> = [];
+
+      switch (currentStage) {
+        case 'unsigned':
+          todoItems.push({
+            type: 'sign_contract',
+            title: '签署合作合同',
+            priority: 'high',
+            dueDate: new Date(now.getTime() + 3 * 24 * 60 * 60 * 1000).toISOString().split('T')[0],
+          });
+          break;
+        case 'deposit_pending':
+          todoItems.push({
+            type: 'pay_deposit',
+            title: '支付首付款',
+            priority: 'high',
+            dueDate: new Date(now.getTime() + 3 * 24 * 60 * 60 * 1000).toISOString().split('T')[0],
+          });
+          break;
+        case 'kpi_pending':
+          todoItems.push({
+            type: 'fetch_data',
+            title: '抓取效果数据',
+            priority: 'medium',
+          });
+          break;
+        case 'final_pending':
+          todoItems.push({
+            type: 'pay_final',
+            title: '支付尾款',
+            priority: 'high',
+            dueDate: new Date(now.getTime() + 3 * 24 * 60 * 60 * 1000).toISOString().split('T')[0],
+          });
+          break;
+      }
+
+      const pendingReviews = state.getReviewsByInvitationId(invitationId).filter(
+        (r) => r.status === 'pending'
+      );
+      if (pendingReviews.length > 0) {
+        todoItems.push({
+          type: 'review_content',
+          title: `审核内容（${pendingReviews.length}条待审）`,
+          priority: 'high',
+        });
+      }
+
+      if (publishDate) {
+        const publish = new Date(publishDate);
+        const diffDays = Math.ceil((publish.getTime() - now.getTime()) / (1000 * 60 * 60 * 24));
+        if (diffDays < -7) {
+          const existingTodo = todoItems.find((t) => t.type === 'fetch_data');
+          if (existingTodo) {
+            existingTodo.priority = 'high';
+          } else {
+            todoItems.push({
+              type: 'fetch_data',
+              title: '数据已超期，尽快抓取',
+              priority: 'high',
+            });
+          }
+        }
+      }
+
+      todoItems.forEach((item) => {
+        let daysUntilDue: number | undefined;
+        if (item.dueDate) {
+          const due = new Date(item.dueDate);
+          daysUntilDue = Math.ceil((due.getTime() - now.getTime()) / (1000 * 60 * 60 * 24));
+        }
+
+        todos.push({
+          id: `${invitationId}-${item.type}`,
+          type: item.type,
+          title: item.title,
+          priority: item.priority,
+          dueDate: item.dueDate,
+          invitationId,
+          kolName,
+          campaignName,
+          daysUntilDue,
+        });
+      });
+    });
+
+    const priorityOrder: Record<TodoPriority, number> = { high: 0, medium: 1, low: 2 };
+    return todos.sort((a, b) => {
+      if (priorityOrder[a.priority] !== priorityOrder[b.priority]) {
+        return priorityOrder[a.priority] - priorityOrder[b.priority];
+      }
+      if (a.daysUntilDue !== undefined && b.daysUntilDue !== undefined) {
+        return a.daysUntilDue - b.daysUntilDue;
+      }
+      if (a.daysUntilDue !== undefined) return -1;
+      if (b.daysUntilDue !== undefined) return 1;
+      return 0;
+    });
+  },
+
+  duplicateCollaboration: async (invitationId) => {
+    await delay(300);
+    const state = get();
+    const invitation = state.invitations.find((i) => i.id === invitationId);
+    if (!invitation) {
+      throw new Error('合作记录不存在');
+    }
+
+    const payments = state.getPaymentsByInvitationId(invitationId);
+    const templatePayments = payments.map((p) => ({
+      type: p.type,
+      amount: p.amount,
+      dueDate: p.dueDate,
+      kolName: p.kolName,
+      campaignName: p.campaignName,
+    }));
+
+    return {
+      invitation: {
+        campaignId: invitation.campaignId,
+        kolId: invitation.kolId,
+        kolName: invitation.kolName,
+        campaignName: invitation.campaignName,
+        fee: invitation.fee,
+        contentRequirements: invitation.contentRequirements,
+        timeline: invitation.timeline,
+        publishDate: invitation.publishDate,
+        exception: invitation.exception,
+      },
+      payments: templatePayments,
+      contentRequirements: invitation.contentRequirements,
+    };
+  },
+
+  getKOLComparison: (kolId) => {
+    const state = get();
+    const { performanceData, kols, invitations, campaigns } = state;
+
+    const kolMap = new Map<string, KOLComparisonData>();
+
+    performanceData.forEach((perf) => {
+      const invitation = invitations.find((i) => i.id === perf.contentId);
+      if (!invitation || invitation.status !== 'accepted') return;
+      if (kolId && invitation.kolId !== kolId) return;
+
+      const kol = kols.find((k) => k.id === invitation.kolId);
+      if (!kol) return;
+
+      const campaign = campaigns.find((c) => c.id === invitation.campaignId);
+
+      if (!kolMap.has(kol.id)) {
+        kolMap.set(kol.id, {
+          kolId: kol.id,
+          kolName: kol.name,
+          platform: kol.platform,
+          campaigns: [],
+          avgImpressions: 0,
+          avgEngagements: 0,
+          avgClicks: 0,
+          avgRoi: 0,
+          totalCollaborations: 0,
+        });
+      }
+
+      const kolData = kolMap.get(kol.id)!;
+      kolData.campaigns.push({
+        campaignId: invitation.campaignId,
+        campaignName: invitation.campaignName || campaign?.name || '',
+        impressions: perf.impressions,
+        engagements: perf.engagements,
+        clicks: perf.clicks,
+        roi: perf.roi,
+        date: perf.collectedAt,
+      });
+    });
+
+    const result: KOLComparisonData[] = [];
+    kolMap.forEach((kolData) => {
+      if (kolData.campaigns.length < 1) return;
+
+      const totalImpressions = kolData.campaigns.reduce((sum, c) => sum + c.impressions, 0);
+      const totalEngagements = kolData.campaigns.reduce((sum, c) => sum + c.engagements, 0);
+      const totalClicks = kolData.campaigns.reduce((sum, c) => sum + c.clicks, 0);
+      const totalRoi = kolData.campaigns.reduce((sum, c) => sum + c.roi, 0);
+      const count = kolData.campaigns.length;
+
+      result.push({
+        ...kolData,
+        avgImpressions: Math.round(totalImpressions / count),
+        avgEngagements: Math.round(totalEngagements / count),
+        avgClicks: Math.round(totalClicks / count),
+        avgRoi: Number((totalRoi / count).toFixed(2)),
+        totalCollaborations: count,
+      });
+    });
+
+    return result.sort((a, b) => b.avgRoi - a.avgRoi);
+  },
+
+  getInvoiceByPaymentId: (paymentId) => {
+    return get().invoices.find((i) => i.paymentId === paymentId);
   },
 
   ensureDataConsistency: async () => {

@@ -1,9 +1,9 @@
-import { useState, useMemo } from 'react';
+import { useState, useMemo, useCallback } from 'react';
 import { useShallow } from 'zustand/shallow';
-import { motion } from 'framer-motion';
+import { motion, AnimatePresence } from 'framer-motion';
 import { useNavigate } from 'react-router-dom';
 import { useAppStore } from '@/store/useAppStore';
-import { formatNumber, formatMoney, formatPercent } from '@/utils';
+import { formatNumber, formatMoney, formatPercent, cn } from '@/utils';
 import Card from '@/components/ui/Card';
 import PlatformBadge from '@/components/ui/PlatformBadge';
 import {
@@ -18,14 +18,56 @@ import {
   ChevronRight,
   Award,
   Calendar,
+  Copy,
+  CheckCircle2,
+  X,
+  AlertCircle,
+  ThumbsUp,
+  Trophy,
+  RefreshCw,
+  DollarSign,
+  FileText,
 } from 'lucide-react';
+import type { Invitation, Campaign } from '@/types';
+
+const generateId = () => Math.random().toString(36).substr(2, 9);
+
+interface DuplicateModalState {
+  open: boolean;
+  historyId: string | null;
+  kolName: string;
+  campaignName: string;
+  budget: string;
+  kpiConfig: string;
+  paymentSchedule: string;
+  contentRequirements: string;
+}
+
+const duplicateCollaboration = (historyId: string) => {
+  return {
+    success: true,
+    templateId: `template-${generateId()}`,
+  };
+};
 
 export default function Archive() {
   const navigate = useNavigate();
   const history = useAppStore(useShallow((state) => state.history));
   const kols = useAppStore(useShallow((state) => state.kols));
+  const campaigns = useAppStore(useShallow((state) => state.campaigns));
+  const invitations = useAppStore(useShallow((state) => state.invitations));
   const [sortBy, setSortBy] = useState<'roi' | 'rating' | 'impressions'>('roi');
   const [searchQuery, setSearchQuery] = useState('');
+  const [duplicateModal, setDuplicateModal] = useState<DuplicateModalState>({
+    open: false,
+    historyId: null,
+    kolName: '',
+    campaignName: '',
+    budget: '',
+    kpiConfig: '',
+    paymentSchedule: '定金30%、尾款70%',
+    contentRequirements: '',
+  });
 
   const kolHistoryMap = useMemo(() => {
     const map = new Map<string, typeof history>();
@@ -39,7 +81,7 @@ export default function Archive() {
   }, [history]);
 
   const kolSummaries = useMemo(() => {
-    return kols
+    const summaries = kols
       .filter((k) => kolHistoryMap.has(k.id))
       .map((kol) => {
         const kolHistory = kolHistoryMap.get(kol.id)!;
@@ -52,29 +94,87 @@ export default function Archive() {
           0
         );
 
+        const suitableForReinvestment = avgRoi >= 3 && avgRating >= 4.5;
+        const lastCooperation = kolHistory[0]?.completedAt;
+
         return {
           kol,
           historyCount: kolHistory.length,
           avgRoi,
           avgRating,
           totalImpressions,
-          lastCooperation: kolHistory[0]?.completedAt,
+          lastCooperation,
+          suitableForReinvestment,
+          roiRank: 0,
         };
+      })
+      .sort((a, b) => b.avgRoi - a.avgRoi)
+      .map((item, index) => ({
+        ...item,
+        roiRank: index + 1,
+      }));
+
+    return summaries.sort((a, b) => {
+      if (sortBy === 'roi') return b.avgRoi - a.avgRoi;
+      if (sortBy === 'rating') return b.avgRating - a.avgRating;
+      return b.totalImpressions - a.totalImpressions;
+    });
+  }, [kols, kolHistoryMap, sortBy]);
+
+  const handleOpenDuplicateModal = useCallback(
+    (historyItem: typeof history[0]) => {
+      const invitation = invitations.find(
+        (i) => i.campaignId === historyItem.campaignId && i.kolId === historyItem.kolId
+      );
+      const campaign = campaigns.find((c) => c.id === historyItem.campaignId);
+
+      setDuplicateModal({
+        open: true,
+        historyId: historyItem.id,
+        kolName: historyItem.kolName || '',
+        campaignName: historyItem.campaignName || '',
+        budget: campaign ? formatMoney(campaign.budget) : '-',
+        kpiConfig: campaign
+          ? `曝光${formatNumber(campaign.kpi.targetImpressions)}、互动${formatNumber(
+              campaign.kpi.targetEngagements
+            )}、点击${formatNumber(campaign.kpi.targetClicks)}`
+          : '-',
+        paymentSchedule: '定金30%、尾款70%',
+        contentRequirements: invitation?.contentRequirements || '无特殊要求',
       });
-  }, [kols, kolHistoryMap]);
+    },
+    [invitations, campaigns]
+  );
+
+  const handleCloseDuplicateModal = useCallback(() => {
+    setDuplicateModal({
+      open: false,
+      historyId: null,
+      kolName: '',
+      campaignName: '',
+      budget: '',
+      kpiConfig: '',
+      paymentSchedule: '定金30%、尾款70%',
+      contentRequirements: '',
+    });
+  }, []);
+
+  const handleConfirmDuplicate = useCallback(() => {
+    if (!duplicateModal.historyId) return;
+    const result = duplicateCollaboration(duplicateModal.historyId);
+    if (result.success) {
+      alert('模板已生成，可在KOL搜索中发起新的合作');
+      handleCloseDuplicateModal();
+      navigate('/kol');
+    }
+  }, [duplicateModal.historyId, handleCloseDuplicateModal, navigate]);
 
   const filteredSummaries = useMemo(() => {
-    return kolSummaries
-      .filter((s) => {
-        if (!searchQuery) return true;
-        return s.kol.name.toLowerCase().includes(searchQuery.toLowerCase());
-      })
-      .sort((a, b) => {
-        if (sortBy === 'roi') return b.avgRoi - a.avgRoi;
-        if (sortBy === 'rating') return b.avgRating - a.avgRating;
-        return b.totalImpressions - a.totalImpressions;
-      });
-  }, [kolSummaries, searchQuery, sortBy]);
+    return kolSummaries.filter((s) => {
+      if (!searchQuery) return true;
+      return s.kol.name.toLowerCase().includes(searchQuery.toLowerCase());
+    });
+  }, [kolSummaries, searchQuery]);
 
   const topKOLs = useMemo(() => {
     return [...filteredSummaries].sort((a, b) => b.avgRoi - a.avgRoi).slice(0, 3);
@@ -224,6 +324,9 @@ export default function Archive() {
                   KOL信息
                 </th>
                 <th className="text-center py-4 px-4 text-sm font-medium text-gray-500">
+                  ROI排名
+                </th>
+                <th className="text-center py-4 px-4 text-sm font-medium text-gray-500">
                   合作次数
                 </th>
                 <th className="text-center py-4 px-4 text-sm font-medium text-gray-500">
@@ -239,84 +342,128 @@ export default function Archive() {
                   最近合作
                 </th>
                 <th className="text-center py-4 px-4 text-sm font-medium text-gray-500">
+                  标签
+                </th>
+                <th className="text-center py-4 px-4 text-sm font-medium text-gray-500">
                   操作
                 </th>
               </tr>
             </thead>
             <tbody>
-              {filteredSummaries.map((item, index) => (
-                <motion.tr
-                  key={item.kol.id}
-                  initial={{ opacity: 0 }}
-                  animate={{ opacity: 1 }}
-                  transition={{ delay: index * 0.03 }}
-                  className="border-b border-gray-50 hover:bg-gray-50 transition-colors"
-                >
-                  <td className="py-4 px-4">
-                    <div className="flex items-center gap-3">
-                      <img
-                        src={item.kol.avatar}
-                        alt={item.kol.name}
-                        className="w-10 h-10 rounded-full object-cover"
-                      />
-                      <div>
-                        <p className="font-medium text-gray-800">
-                          {item.kol.name}
-                        </p>
-                        <div className="flex items-center gap-2 mt-0.5">
-                          <PlatformBadge platform={item.kol.platform} />
-                          <span className="text-xs text-gray-500">
-                            {item.kol.category.join('、')}
-                          </span>
+              {filteredSummaries.map((item, index) => {
+                const historyItem = history.find((h) => h.kolId === item.kol.id);
+                return (
+                  <motion.tr
+                    key={item.kol.id}
+                    initial={{ opacity: 0 }}
+                    animate={{ opacity: 1 }}
+                    transition={{ delay: index * 0.03 }}
+                    className="border-b border-gray-50 hover:bg-gray-50 transition-colors"
+                  >
+                    <td className="py-4 px-4">
+                      <div className="flex items-center gap-3">
+                        <img
+                          src={item.kol.avatar}
+                          alt={item.kol.name}
+                          className="w-10 h-10 rounded-full object-cover"
+                        />
+                        <div>
+                          <p className="font-medium text-gray-800">{item.kol.name}</p>
+                          <div className="flex items-center gap-2 mt-0.5">
+                            <PlatformBadge platform={item.kol.platform} />
+                            <span className="text-xs text-gray-500">
+                              {item.kol.category.join('、')}
+                            </span>
+                          </div>
                         </div>
                       </div>
-                    </div>
-                  </td>
-                  <td className="py-4 px-4 text-center">
-                    <span className="font-mono font-semibold text-gray-800">
-                      {item.historyCount}
-                    </span>
-                  </td>
-                  <td className="py-4 px-4 text-center">
-                    <span
-                      className={`font-mono font-bold ${
-                        item.avgRoi >= 3
-                          ? 'text-success-600'
-                          : item.avgRoi >= 2
-                          ? 'text-primary-600'
-                          : 'text-accent-600'
-                      }`}
-                    >
-                      {item.avgRoi.toFixed(2)}x
-                    </span>
-                  </td>
-                  <td className="py-4 px-4 text-center">
-                    <div className="flex items-center justify-center gap-1">
-                      <Star className="w-4 h-4 text-amber-500 fill-current" />
-                      <span className="font-mono font-semibold text-gray-800">
-                        {item.avgRating.toFixed(1)}
+                    </td>
+                    <td className="py-4 px-4 text-center">
+                      <span
+                        className={cn(
+                          'inline-flex items-center justify-center',
+                          item.roiRank === 1
+                            ? 'w-8 h-8 bg-gradient-to-br from-amber-400 to-amber-600 rounded-full text-white font-bold text-sm'
+                            : 'font-mono font-semibold text-gray-600'
+                        )}
+                      >
+                        {item.roiRank === 1 ? (
+                          <>
+                            <Trophy className="w-4 h-4" />
+                          </>
+                        ) : (
+                          item.roiRank
+                        )}
                       </span>
-                    </div>
-                  </td>
-                  <td className="py-4 px-4 text-center font-mono text-sm text-gray-800">
-                    {formatNumber(item.totalImpressions)}
-                  </td>
-                  <td className="py-4 px-4 text-center text-sm text-gray-500">
-                    {item.lastCooperation
-                      ? new Date(item.lastCooperation).toLocaleDateString('zh-CN')
-                      : '-'}
-                  </td>
-                  <td className="py-4 px-4 text-center">
-                    <button
-                      onClick={() => navigate(`/kol/${item.kol.id}`)}
-                      className="text-primary-600 hover:text-primary-700 text-sm font-medium flex items-center gap-1 mx-auto"
-                    >
-                      查看详情
-                      <ChevronRight className="w-4 h-4" />
-                    </button>
-                  </td>
-                </motion.tr>
-              ))}
+                    </td>
+                    <td className="py-4 px-4 text-center">
+                      <span className="font-mono font-semibold text-gray-800">
+                        {item.historyCount}
+                      </span>
+                    </td>
+                    <td className="py-4 px-4 text-center">
+                      <span
+                        className={cn(
+                          'font-mono font-bold',
+                          item.avgRoi >= 3
+                            ? 'text-success-600'
+                            : item.avgRoi >= 2
+                            ? 'text-primary-600'
+                            : 'text-accent-600'
+                        )}
+                      >
+                        {item.avgRoi.toFixed(2)}x
+                      </span>
+                    </td>
+                    <td className="py-4 px-4 text-center">
+                      <div className="flex items-center justify-center gap-1">
+                        <Star className="w-4 h-4 text-amber-500 fill-current" />
+                        <span className="font-mono font-semibold text-gray-800">
+                          {item.avgRating.toFixed(1)}
+                        </span>
+                      </div>
+                    </td>
+                    <td className="py-4 px-4 text-center font-mono text-sm text-gray-800">
+                      {formatNumber(item.totalImpressions)}
+                    </td>
+                    <td className="py-4 px-4 text-center text-sm text-gray-500">
+                      {item.lastCooperation
+                        ? new Date(item.lastCooperation).toLocaleDateString('zh-CN')
+                        : '-'}
+                    </td>
+                    <td className="py-4 px-4 text-center">
+                      <div className="flex flex-col items-center gap-1">
+                        {item.suitableForReinvestment && (
+                          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-medium bg-success-100 text-success-700">
+                            <ThumbsUp className="w-3 h-3" />
+                            适合复投
+                          </span>
+                        )}
+                      </div>
+                    </td>
+                    <td className="py-4 px-4">
+                      <div className="flex items-center justify-center gap-1.5 flex-wrap">
+                        <button
+                          onClick={() => navigate(`/kol/${item.kol.id}`)}
+                          className="btn-secondary text-xs py-1.5 px-2.5"
+                        >
+                          查看详情
+                          <ChevronRight className="w-3.5 h-3.5" />
+                        </button>
+                        {historyItem && (
+                          <button
+                            onClick={() => handleOpenDuplicateModal(historyItem)}
+                            className="btn-primary text-xs py-1.5 px-2.5 bg-primary-600 hover:bg-primary-700"
+                          >
+                            <Copy className="w-3.5 h-3.5" />
+                            复用为模板
+                          </button>
+                        )}
+                      </div>
+                    </td>
+                  </motion.tr>
+                );
+              })}
             </tbody>
           </table>
         </div>
@@ -417,6 +564,124 @@ export default function Archive() {
           </div>
         </Card>
       </div>
+
+      <AnimatePresence>
+        {duplicateModal.open && (
+          <DuplicateModal
+            modal={duplicateModal}
+            onClose={handleCloseDuplicateModal}
+            onConfirm={handleConfirmDuplicate}
+          />
+        )}
+      </AnimatePresence>
+    </div>
+  );
+}
+
+interface DuplicateModalProps {
+  modal: DuplicateModalState;
+  onClose: () => void;
+  onConfirm: () => void;
+}
+
+function DuplicateModal({ modal, onClose, onConfirm }: DuplicateModalProps) {
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+      <motion.div
+        initial={{ opacity: 0 }}
+        animate={{ opacity: 1 }}
+        exit={{ opacity: 0 }}
+        onClick={onClose}
+        className="absolute inset-0 bg-black/50 backdrop-blur-sm"
+      />
+      <motion.div
+        initial={{ opacity: 0, y: 20, scale: 0.98 }}
+        animate={{ opacity: 1, y: 0, scale: 1 }}
+        exit={{ opacity: 0, y: 20, scale: 0.98 }}
+        transition={{ type: 'spring', damping: 25, stiffness: 300 }}
+        className="relative w-full max-w-lg bg-white rounded-2xl shadow-2xl"
+      >
+        <div className="sticky top-0 bg-white border-b border-gray-100 px-6 py-4 flex items-center justify-between z-10">
+          <h2 className="font-display font-bold text-xl text-gray-800">
+            复用为模板
+          </h2>
+          <button
+            onClick={onClose}
+            className="w-8 h-8 rounded-lg hover:bg-gray-100 flex items-center justify-center transition-colors"
+          >
+            <X className="w-5 h-5 text-gray-500" />
+          </button>
+        </div>
+
+        <div className="p-6 space-y-4">
+          <div className="bg-primary-50 border border-primary-200 rounded-lg p-4">
+            <div className="flex items-start gap-3">
+              <div className="w-10 h-10 bg-primary-100 rounded-full flex items-center justify-center flex-shrink-0">
+                <Copy className="w-5 h-5 text-primary-600" />
+              </div>
+              <div>
+                <p className="font-medium text-gray-800 mb-1">
+                  即将复用与 <span className="text-primary-600">{modal.kolName}</span> 的合作记录
+                </p>
+                <p className="text-sm text-gray-500">
+                  以下内容将作为模板复制，用于发起新的合作
+                </p>
+              </div>
+            </div>
+          </div>
+
+          <div className="space-y-3">
+            <div className="flex items-start justify-between gap-4 p-3 bg-gray-50 rounded-lg">
+              <div className="flex items-center gap-2">
+                <Calendar className="w-4 h-4 text-gray-400" />
+                <span className="text-sm text-gray-600">活动信息</span>
+              </div>
+              <div className="text-right flex-1">
+                <p className="text-sm font-medium text-gray-800">{modal.campaignName}</p>
+                <p className="text-xs text-gray-500 mt-0.5">预算：{modal.budget}</p>
+                <p className="text-xs text-gray-500">KPI：{modal.kpiConfig}</p>
+              </div>
+            </div>
+
+            <div className="flex items-start justify-between gap-4 p-3 bg-gray-50 rounded-lg">
+              <div className="flex items-center gap-2">
+                <DollarSign className="w-4 h-4 text-gray-400" />
+                <span className="text-sm text-gray-600">付款节奏</span>
+              </div>
+              <span className="text-sm font-medium text-gray-800">{modal.paymentSchedule}</span>
+            </div>
+
+            <div className="flex items-start justify-between gap-4 p-3 bg-gray-50 rounded-lg">
+              <div className="flex items-center gap-2">
+                <FileText className="w-4 h-4 text-gray-400" />
+                <span className="text-sm text-gray-600">内容要求</span>
+              </div>
+              <p className="text-sm font-medium text-gray-800 text-right max-w-[60%]">
+                {modal.contentRequirements}
+              </p>
+            </div>
+          </div>
+
+          <div className="bg-amber-50 border border-amber-200 rounded-lg p-3">
+            <div className="flex items-start gap-2">
+              <AlertCircle className="w-4 h-4 text-amber-500 flex-shrink-0 mt-0.5" />
+              <p className="text-xs text-amber-700">
+                确认后将生成模板，并跳转至KOL搜索页面，您可以选择该KOL发起新的合作
+              </p>
+            </div>
+          </div>
+        </div>
+
+        <div className="flex justify-end gap-2 p-6 pt-0">
+          <button onClick={onClose} className="btn-secondary">
+            取消
+          </button>
+          <button onClick={onConfirm} className="btn-primary">
+            <RefreshCw className="w-4 h-4" />
+            确认复用
+          </button>
+        </div>
+      </motion.div>
     </div>
   );
 }
