@@ -190,29 +190,41 @@ function generateReviews(invitations: Invitation[]): ContentReview[] {
   return reviews;
 }
 
-function generatePerformanceData(reviews: ContentReview[]): PerformanceData[] {
-  const approvedReviews = reviews.filter((r) => r.status === 'approved');
-  return approvedReviews.map((review, index) => {
-    const impressions = Math.floor(Math.random() * 5000000) + 500000;
-    const engagements = Math.floor(impressions * (0.03 + Math.random() * 0.07));
-    const clicks = Math.floor(engagements * (0.1 + Math.random() * 0.2));
+function generatePerformanceData(
+  invitations: Invitation[],
+  campaigns: Campaign[]
+): PerformanceData[] {
+  const acceptedInvitations = invitations.filter((i) => i.status === 'accepted');
+  return acceptedInvitations.map((invitation, index) => {
+    const campaign = campaigns.find((c) => c.id === invitation.campaignId);
+    const targetImpressions = campaign?.kpi.targetImpressions ?? Math.floor(Math.random() * 5000000) + 500000;
+    const targetEngagements = campaign?.kpi.targetEngagements ?? Math.floor(targetImpressions * 0.05);
+    const targetClicks = campaign?.kpi.targetClicks ?? Math.floor(targetEngagements * 0.15);
+
+    const multiplier = 0.6 + Math.random() * 0.8;
+    const impressions = Math.floor(targetImpressions * multiplier);
+    const engagements = Math.floor(targetEngagements * multiplier);
+    const clicks = Math.floor(targetClicks * multiplier);
     const conversionRate = 0.02 + Math.random() * 0.08;
     const roi = 1.5 + Math.random() * 4;
+    const fetched = Math.random() > 0.3;
 
     return {
       id: `performance-${index + 1}`,
-      contentId: review.id,
-      kolName: review.kolName,
-      campaignName: review.campaignName,
-      impressions,
-      engagements,
-      clicks,
-      conversionRate,
-      roi,
+      contentId: invitation.id,
+      kolName: invitation.kolName,
+      campaignName: invitation.campaignName,
+      impressions: fetched ? impressions : 0,
+      engagements: fetched ? engagements : 0,
+      clicks: fetched ? clicks : 0,
+      conversionRate: fetched ? conversionRate : 0,
+      roi: fetched ? roi : 0,
       collectedAt: new Date().toISOString(),
-      targetImpressions: Math.floor(impressions * (0.8 + Math.random() * 0.4)),
-      targetEngagements: Math.floor(engagements * (0.8 + Math.random() * 0.4)),
-      targetClicks: Math.floor(clicks * (0.8 + Math.random() * 0.4)),
+      targetImpressions,
+      targetEngagements,
+      targetClicks,
+      fetchStatus: fetched ? 'success' : 'idle',
+      lastFetchedAt: fetched ? new Date().toISOString() : undefined,
     };
   });
 }
@@ -387,7 +399,7 @@ export const mockKOLs = generateKOLs();
 export const mockCampaigns = generateCampaigns();
 export const mockInvitations = generateInvitations(mockKOLs, mockCampaigns);
 export const mockReviews = generateReviews(mockInvitations);
-export const mockPerformanceData = generatePerformanceData(mockReviews);
+export const mockPerformanceData = generatePerformanceData(mockInvitations, mockCampaigns);
 export const mockPayments = generatePayments(mockInvitations);
 export const mockContracts = generateContracts(mockInvitations);
 export const mockInvoices = generateInvoices(mockPayments);

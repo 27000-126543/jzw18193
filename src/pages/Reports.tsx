@@ -36,30 +36,35 @@ import {
 
 export default function Reports() {
   const navigate = useNavigate();
-  const { performanceData, fetchPerformanceData, getPaymentsByInvitationId } = useAppStore(useShallow((state) => ({
-    performanceData: state.performanceData,
-    fetchPerformanceData: state.fetchPerformanceData,
-    getPaymentsByInvitationId: state.getPaymentsByInvitationId,
-  })));
+  const { performanceData, fetchPerformanceData, getPaymentsByInvitationId, checkKpiMet } =
+    useAppStore(
+      useShallow((state) => ({
+        performanceData: state.performanceData,
+        fetchPerformanceData: state.fetchPerformanceData,
+        getPaymentsByInvitationId: state.getPaymentsByInvitationId,
+        checkKpiMet: state.checkKpiMet,
+      }))
+    );
   const [selectedPeriod, setSelectedPeriod] = useState<'7d' | '30d' | '90d'>('30d');
   const [fetchingId, setFetchingId] = useState<string | null>(null);
 
-  const handleFetchData = useCallback(async (contentId: string) => {
-    setFetchingId(contentId);
-    try {
-      await fetchPerformanceData(contentId);
-      alert('数据抓取成功！');
-    } catch (e: any) {
-      alert('数据抓取失败：' + e.message);
-    } finally {
-      setFetchingId(null);
-    }
-  }, [fetchPerformanceData]);
+  const handleFetchData = useCallback(
+    async (contentId: string) => {
+      setFetchingId(contentId);
+      try {
+        await fetchPerformanceData(contentId);
+        alert('数据抓取成功！');
+      } catch (e: any) {
+        alert('数据抓取失败：' + e.message);
+      } finally {
+        setFetchingId(null);
+      }
+    },
+    [fetchPerformanceData]
+  );
 
   const topPerforming = useMemo(() => {
-    return [...performanceData]
-      .sort((a, b) => b.roi - a.roi)
-      .slice(0, 10);
+    return [...performanceData].sort((a, b) => b.roi - a.roi).slice(0, 10);
   }, [performanceData]);
 
   const chartData = useMemo(() => {
@@ -71,48 +76,46 @@ export default function Reports() {
     }));
   }, [topPerforming]);
 
-  const totalStats = useMemo(() => ({
-    impressions: performanceData.reduce((sum, p) => sum + p.impressions, 0),
-    engagements: performanceData.reduce((sum, p) => sum + p.engagements, 0),
-    clicks: performanceData.reduce((sum, p) => sum + p.clicks, 0),
-    avgRoi:
-      performanceData.length > 0
-        ? performanceData.reduce((sum, p) => sum + p.roi, 0) / performanceData.length
-        : 0,
-  }), [performanceData]);
+  const totalStats = useMemo(
+    () => ({
+      impressions: performanceData.reduce((sum, p) => sum + p.impressions, 0),
+      engagements: performanceData.reduce((sum, p) => sum + p.engagements, 0),
+      clicks: performanceData.reduce((sum, p) => sum + p.clicks, 0),
+      avgRoi:
+        performanceData.length > 0
+          ? performanceData.reduce((sum, p) => sum + p.roi, 0) / performanceData.length
+          : 0,
+    }),
+    [performanceData]
+  );
 
   const barColors = ['#416EA4', '#FF6B35', '#10B981', '#8B5CF6', '#F59E0B'];
 
-  const fetchedCount = performanceData.filter(p => p.lastFetchedAt).length;
-  const dataSourceText = fetchedCount > 0
-    ? `已抓取 ${fetchedCount} 条实时数据`
-    : '待发布后抓取实时数据';
+  const fetchedCount = performanceData.filter((p) => p.lastFetchedAt).length;
+  const dataSourceText =
+    fetchedCount > 0 ? `已抓取 ${fetchedCount} 条实时数据` : '待发布后抓取实时数据';
 
   const getKpiStatus = (perf: typeof performanceData[0]) => {
-    const hasFetched = !!perf.lastFetchedAt;
-    if (!hasFetched) return 'pending';
-    const impressionRate = perf.targetImpressions ? perf.impressions / perf.targetImpressions : 0;
-    const engagementRate = perf.targetEngagements ? perf.engagements / perf.targetEngagements : 0;
-    const clickRate = perf.targetClicks ? perf.clicks / perf.targetClicks : 0;
-    if (impressionRate >= 1 && engagementRate >= 1 && clickRate >= 1) return 'met';
-    return 'not_met';
+    const result = checkKpiMet(perf.contentId);
+    if (!result.fetched) return 'pending';
+    return result.ok ? 'met' : 'not_met';
+  };
+
+  const getKpiResult = (perf: typeof performanceData[0]) => {
+    return checkKpiMet(perf.contentId);
   };
 
   const hasFinalPending = (invitationId: string) => {
     const payments = getPaymentsByInvitationId(invitationId);
-    return payments.some(p => p.type === 'final' && p.status === 'pending');
+    return payments.some((p) => p.type === 'final' && p.status === 'pending');
   };
 
   return (
     <div className="space-y-6">
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
         <div>
-          <h1 className="font-display font-bold text-2xl text-gray-800">
-            数据报告
-          </h1>
-          <p className="text-gray-500 mt-1">
-            分析KOL合作表现，对比预期KPI，优化投放策略
-          </p>
+          <h1 className="font-display font-bold text-2xl text-gray-800">数据报告</h1>
+          <p className="text-gray-500 mt-1">分析KOL合作表现，对比预期KPI，优化投放策略</p>
         </div>
         <div className="flex items-center gap-3">
           <div className="flex bg-white rounded-lg border border-gray-200 p-1">
@@ -210,9 +213,7 @@ export default function Reports() {
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
         <Card className="p-6 lg:col-span-2">
           <div className="flex items-center justify-between mb-6">
-            <h3 className="font-display font-semibold text-lg text-gray-800">
-              ROI 排行榜
-            </h3>
+            <h3 className="font-display font-semibold text-lg text-gray-800">ROI 排行榜</h3>
             <div className="flex gap-2">
               <button className="px-3 py-1.5 rounded-lg text-sm font-medium bg-primary-700 text-white">
                 ROI
@@ -228,7 +229,12 @@ export default function Reports() {
           <div className="h-80">
             <ResponsiveContainer width="100%" height="100%">
               <BarChart data={chartData} layout="vertical">
-                <CartesianGrid strokeDasharray="3 3" stroke="#F1F5F9" horizontal={true} vertical={false} />
+                <CartesianGrid
+                  strokeDasharray="3 3"
+                  stroke="#F1F5F9"
+                  horizontal={true}
+                  vertical={false}
+                />
                 <XAxis
                   type="number"
                   tick={{ fontSize: 12, fill: '#94A3B8' }}
@@ -254,10 +260,7 @@ export default function Reports() {
                 />
                 <Bar dataKey="roi" radius={[0, 8, 8, 0]}>
                   {chartData.map((_, index) => (
-                    <Cell
-                      key={`cell-${index}`}
-                      fill={barColors[index % barColors.length]}
-                    />
+                    <Cell key={`cell-${index}`} fill={barColors[index % barColors.length]} />
                   ))}
                 </Bar>
               </BarChart>
@@ -271,15 +274,16 @@ export default function Reports() {
           </h3>
           {performanceData.slice(0, 5).map((perf, index) => {
             const hasFetched = !!perf.lastFetchedAt;
-            const impressionRate = hasFetched && perf.targetImpressions
-              ? perf.impressions / perf.targetImpressions
-              : 0;
-            const engagementRate = hasFetched && perf.targetEngagements
-              ? perf.engagements / perf.targetEngagements
-              : 0;
-            const clickRate = hasFetched && perf.targetClicks
-              ? perf.clicks / perf.targetClicks
-              : 0;
+            const impressionRate =
+              hasFetched && perf.targetImpressions
+                ? perf.impressions / perf.targetImpressions
+                : 0;
+            const engagementRate =
+              hasFetched && perf.targetEngagements
+                ? perf.engagements / perf.targetEngagements
+                : 0;
+            const clickRate =
+              hasFetched && perf.targetClicks ? perf.clicks / perf.targetClicks : 0;
             const kpiStatus = getKpiStatus(perf);
             const allMet = kpiStatus === 'met';
 
@@ -320,16 +324,24 @@ export default function Reports() {
                       <span className="text-xs text-gray-500 flex items-center gap-1">
                         <Eye className="w-3 h-3" /> 曝光
                       </span>
-                      <span className={`text-xs font-bold ${
-                        !hasFetched ? 'text-gray-400' : impressionRate >= 1 ? 'text-success-600' : 'text-accent-600'
-                      }`}>
+                      <span
+                        className={`text-xs font-bold ${
+                          !hasFetched
+                            ? 'text-gray-400'
+                            : impressionRate >= 1
+                            ? 'text-success-600'
+                            : 'text-accent-600'
+                        }`}
+                      >
                         {(impressionRate * 100).toFixed(0)}%
                       </span>
                     </div>
                     <div className="progress-bar">
                       <div
                         className={`progress-fill ${
-                          !hasFetched ? 'bg-gray-300' : impressionRate >= 1
+                          !hasFetched
+                            ? 'bg-gray-300'
+                            : impressionRate >= 1
                             ? 'bg-gradient-to-r from-success-400 to-success-600'
                             : 'bg-gradient-to-r from-accent-400 to-accent-600'
                         }`}
@@ -343,16 +355,24 @@ export default function Reports() {
                       <span className="text-xs text-gray-500 flex items-center gap-1">
                         <Heart className="w-3 h-3" /> 互动
                       </span>
-                      <span className={`text-xs font-bold ${
-                        !hasFetched ? 'text-gray-400' : engagementRate >= 1 ? 'text-success-600' : 'text-accent-600'
-                      }`}>
+                      <span
+                        className={`text-xs font-bold ${
+                          !hasFetched
+                            ? 'text-gray-400'
+                            : engagementRate >= 1
+                            ? 'text-success-600'
+                            : 'text-accent-600'
+                        }`}
+                      >
                         {(engagementRate * 100).toFixed(0)}%
                       </span>
                     </div>
                     <div className="progress-bar">
                       <div
                         className={`progress-fill ${
-                          !hasFetched ? 'bg-gray-300' : engagementRate >= 1
+                          !hasFetched
+                            ? 'bg-gray-300'
+                            : engagementRate >= 1
                             ? 'bg-gradient-to-r from-success-400 to-success-600'
                             : 'bg-gradient-to-r from-accent-400 to-accent-600'
                         }`}
@@ -366,16 +386,24 @@ export default function Reports() {
                       <span className="text-xs text-gray-500 flex items-center gap-1">
                         <MousePointerClick className="w-3 h-3" /> 点击
                       </span>
-                      <span className={`text-xs font-bold ${
-                        !hasFetched ? 'text-gray-400' : clickRate >= 1 ? 'text-success-600' : 'text-accent-600'
-                      }`}>
+                      <span
+                        className={`text-xs font-bold ${
+                          !hasFetched
+                            ? 'text-gray-400'
+                            : clickRate >= 1
+                            ? 'text-success-600'
+                            : 'text-accent-600'
+                        }`}
+                      >
                         {(clickRate * 100).toFixed(0)}%
                       </span>
                     </div>
                     <div className="progress-bar">
                       <div
                         className={`progress-fill ${
-                          !hasFetched ? 'bg-gray-300' : clickRate >= 1
+                          !hasFetched
+                            ? 'bg-gray-300'
+                            : clickRate >= 1
                             ? 'bg-gradient-to-r from-success-400 to-success-600'
                             : 'bg-gradient-to-r from-accent-400 to-accent-600'
                         }`}
@@ -405,49 +433,38 @@ export default function Reports() {
           <table className="w-full">
             <thead>
               <tr className="border-b border-gray-100">
-                <th className="text-left py-4 px-4 text-sm font-medium text-gray-500">
-                  KOL
-                </th>
-                <th className="text-left py-4 px-4 text-sm font-medium text-gray-500">
-                  活动
-                </th>
-                <th className="text-right py-4 px-4 text-sm font-medium text-gray-500">
-                  曝光量
-                </th>
-                <th className="text-right py-4 px-4 text-sm font-medium text-gray-500">
-                  互动量
-                </th>
-                <th className="text-right py-4 px-4 text-sm font-medium text-gray-500">
-                  点击量
-                </th>
+                <th className="text-left py-4 px-4 text-sm font-medium text-gray-500">KOL</th>
+                <th className="text-left py-4 px-4 text-sm font-medium text-gray-500">活动</th>
+                <th className="text-right py-4 px-4 text-sm font-medium text-gray-500">曝光量</th>
+                <th className="text-right py-4 px-4 text-sm font-medium text-gray-500">互动量</th>
+                <th className="text-right py-4 px-4 text-sm font-medium text-gray-500">点击量</th>
                 <th className="text-center py-4 px-4 text-sm font-medium text-gray-500">
                   抓取状态
                 </th>
                 <th className="text-center py-4 px-4 text-sm font-medium text-gray-500">
                   抓取时间
                 </th>
-                <th className="text-right py-4 px-4 text-sm font-medium text-gray-500">
-                  ROI
-                </th>
-                <th className="text-center py-4 px-4 text-sm font-medium text-gray-500">
-                  操作
-                </th>
+                <th className="text-right py-4 px-4 text-sm font-medium text-gray-500">ROI</th>
+                <th className="text-center py-4 px-4 text-sm font-medium text-gray-500">操作</th>
               </tr>
             </thead>
             <tbody>
               {performanceData.slice(0, 8).map((perf, index) => {
                 const isFetching = perf.fetchStatus === 'fetching' || fetchingId === perf.contentId;
                 const isFetched = perf.fetchStatus === 'success' || !!perf.lastFetchedAt;
-                const kpiStatus = getKpiStatus(perf);
+                const kpiResult = getKpiResult(perf);
+                const kpiStatus = kpiResult.fetched ? (kpiResult.ok ? 'met' : 'not_met') : 'pending';
                 const finalPending = hasFinalPending(perf.contentId);
                 const canGoFinance = kpiStatus === 'met' && finalPending;
-                const financeTooltip = kpiStatus === 'pending'
-                  ? '请先抓取数据'
-                  : kpiStatus === 'not_met'
-                  ? 'KPI未达标'
-                  : !finalPending
-                  ? '尾款已处理'
-                  : '';
+
+                let financeTooltip = '';
+                if (kpiStatus === 'pending') {
+                  financeTooltip = '请先抓取数据';
+                } else if (kpiStatus === 'not_met') {
+                  financeTooltip = kpiResult.reason || 'KPI未达标';
+                } else if (!finalPending) {
+                  financeTooltip = '尾款已处理';
+                }
 
                 return (
                   <motion.tr
@@ -464,9 +481,7 @@ export default function Reports() {
                           alt={perf.kolName}
                           className="w-9 h-9 rounded-full"
                         />
-                        <span className="font-medium text-gray-800">
-                          {perf.kolName}
-                        </span>
+                        <span className="font-medium text-gray-800">{perf.kolName}</span>
                       </div>
                     </td>
                     <td className="py-4 px-4 text-sm text-gray-600 truncate max-w-[200px]">
@@ -520,7 +535,11 @@ export default function Reports() {
                           disabled={fetchingId === perf.contentId}
                           className="text-primary-600 hover:text-primary-700 disabled:text-gray-400 disabled:cursor-not-allowed text-sm font-medium flex items-center gap-1"
                         >
-                          <RefreshCw className={`w-4 h-4 ${fetchingId === perf.contentId ? 'animate-spin' : ''}`} />
+                          <RefreshCw
+                            className={`w-4 h-4 ${
+                              fetchingId === perf.contentId ? 'animate-spin' : ''
+                            }`}
+                          />
                           {isFetched ? '重新抓取' : '抓取数据'}
                         </button>
                         <button

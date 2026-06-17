@@ -30,7 +30,7 @@ import {
   Heart,
   MousePointerClick,
 } from 'lucide-react';
-import type { Payment, Invitation, PerformanceData } from '@/types';
+import type { Payment, Invitation, PerformanceData, Contract, Invoice } from '@/types';
 
 const stageFilters = [
   { value: 'all', label: '全部' },
@@ -59,17 +59,10 @@ interface CollaborationView {
   stage: CollaborationStage;
   kpiStatus: 'met' | 'not_met' | 'pending';
   contractSigned: boolean;
+  contract?: Contract;
+  invoices: Invoice[];
   invoicesIssued: number;
   platform?: string;
-}
-
-function computeKpiStatus(perf?: PerformanceData): 'met' | 'not_met' | 'pending' {
-  if (!perf || !perf.lastFetchedAt) return 'pending';
-  const impressionRate = perf.targetImpressions ? perf.impressions / perf.targetImpressions : 0;
-  const engagementRate = perf.targetEngagements ? perf.engagements / perf.targetEngagements : 0;
-  const clickRate = perf.targetClicks ? perf.clicks / perf.targetClicks : 0;
-  if (impressionRate >= 1 && engagementRate >= 1 && clickRate >= 1) return 'met';
-  return 'not_met';
 }
 
 function computeStage(cv: {
@@ -92,25 +85,35 @@ export default function Finance() {
     invitations,
     payments,
     performanceData,
+    contracts,
+    invoices,
     markPaymentPaid,
     getPerformanceByInvitationId,
     getKolById,
+    signContract,
+    createInvoiceForPayment,
+    markInvoiceIssued,
+    checkKpiMet,
   } = useAppStore(
     useShallow((state) => ({
       invitations: state.invitations,
       payments: state.payments,
       performanceData: state.performanceData,
+      contracts: state.contracts,
+      invoices: state.invoices,
       markPaymentPaid: state.markPaymentPaid,
       getPerformanceByInvitationId: state.getPerformanceByInvitationId,
       getKolById: state.getKolById,
+      signContract: state.signContract,
+      createInvoiceForPayment: state.createInvoiceForPayment,
+      markInvoiceIssued: state.markInvoiceIssued,
+      checkKpiMet: state.checkKpiMet,
     }))
   );
 
   const [stageFilter, setStageFilter] = useState<StageFilter>('all');
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedCollab, setSelectedCollab] = useState<CollaborationView | null>(null);
-  const [signedContracts, setSignedContracts] = useState<Set<string>>(new Set());
-  const [issuedInvoices, setIssuedInvoices] = useState<Set<string>>(new Set());
 
   const collaborations = useMemo<CollaborationView[]>(() => {
     const acceptedInvitations = invitations.filter((inv) => inv.status === 'accepted');
@@ -119,9 +122,18 @@ export default function Finance() {
       const depositPayment = invPayments.find((p) => p.type === 'deposit');
       const finalPayment = invPayments.find((p) => p.type === 'final');
       const performance = getPerformanceByInvitationId(inv.id);
-      const kpiStatus = computeKpiStatus(performance);
-      const contractSigned = signedContracts.has(inv.id);
-      const invoicesIssued = invPayments.filter((p) => issuedInvoices.has(p.id)).length;
+      const contract = contracts.find((c) => c.invitationId === inv.id);
+      const contractSigned = contract?.status === 'signed';
+      const invInvoices = invoices.filter((i) => i.invitationId === inv.id);
+      const invoicesIssued = invPayments.filter((p) =>
+        invInvoices.some((i) => i.paymentId === p.id && i.status === 'issued')
+      ).length;
+
+      const kpiResult = checkKpiMet(inv.id);
+      let kpiStatus: 'met' | 'not_met' | 'pending' = 'pending';
+      if (kpiResult.fetched) {
+        kpiStatus = kpiResult.ok ? 'met' : 'not_met';
+      }
 
       const kol = inv.kolId ? getKolById(inv.kolId) : undefined;
 
@@ -135,13 +147,15 @@ export default function Finance() {
         stage: 'unsigned' as CollaborationStage,
         kpiStatus,
         contractSigned,
+        contract,
+        invoices: invInvoices,
         invoicesIssued,
         platform: kol?.platform,
       };
       cv.stage = computeStage(cv);
       return cv;
     });
-  }, [invitations, payments, performanceData, signedContracts, issuedInvoices, getPerformanceByInvitationId, getKolById]);
+  }, [invitations, payments, performanceData, contracts, invoices, getPerformanceByInvitationId, getKolById, checkKpiMet]);
 
   const filteredCollaborations = useMemo(() => {
     return collaborations.filter((cv) => {
@@ -186,26 +200,36 @@ export default function Finance() {
     return counts;
   }, [collaborations]);
 
-  const handleSignContract = useCallback((invId: string) => {
-    setSignedContracts((prev) => new Set(prev).add(invId));
-    alert('合同已签署！');
-  }, []);
+  const handleSignContract = useCallback(
+    async (invId: string) => {
+      try {
+        const contract = contracts.find((c) => c.invitationId === invId);
+        if (!contract) throw new Error('未找到合同记录');
+        await signContract(contract.id);
+        alert('合同已签署！');
+      } catch (e: any) {
+        alert('签署失败：' + e.message);
+      }
+    },
+    [contracts, signContract]
+  );
 
   const handleMarkPaid = useCallback(
     async (payment: Payment) => {
       try {
         if (payment.type === 'final') {
-          const perf = getPerformanceByInvitationId(payment.invitationId);
-          if (perf) {
-            const kpiStatus = computeKpiStatus(perf);
-            if (kpiStatus !== 'met') {
-              alert('KPI未达标，无法支付尾款，请先确认数据抓取结果');
+          const kpiResult = checkKpiMet(payment.invitationId);
+          if (!kpiResult.fetched) {
+            if (
+              !confirm(
+                '注意：该笔尾款对应的效果数据尚未抓取，数据未达标的情况下将无法支付尾款。建议先抓取数据再操作，确认继续吗？'
+              )
+            ) {
               return;
             }
-          } else {
-            if (!confirm('注意：该笔尾款对应的效果数据尚未抓取，数据未达标的情况下将无法支付尾款。建议先抓取数据再操作，确认继续吗？')) {
-              return;
-            }
+          } else if (!kpiResult.ok) {
+            alert(kpiResult.reason);
+            return;
           }
         }
         await markPaymentPaid(payment.id);
@@ -214,13 +238,25 @@ export default function Finance() {
         alert('操作失败：' + e.message);
       }
     },
-    [markPaymentPaid, getPerformanceByInvitationId]
+    [markPaymentPaid, checkKpiMet]
   );
 
-  const handleIssueInvoice = useCallback((paymentId: string) => {
-    setIssuedInvoices((prev) => new Set(prev).add(paymentId));
-    alert('发票已开具！');
-  }, []);
+  const handleIssueInvoice = useCallback(
+    async (paymentId: string) => {
+      try {
+        const existing = invoices.find((i) => i.paymentId === paymentId);
+        if (existing) {
+          await markInvoiceIssued(existing.id);
+        } else {
+          await createInvoiceForPayment(paymentId);
+        }
+        alert('发票已开具！');
+      } catch (e: any) {
+        alert('开票失败：' + e.message);
+      }
+    },
+    [invoices, createInvoiceForPayment, markInvoiceIssued]
+  );
 
   const getStageLabel = (stage: CollaborationStage) => {
     const map: Record<CollaborationStage, string> = {
@@ -261,7 +297,12 @@ export default function Finance() {
       kuaishou: '快手',
     };
     return (
-      <span className={cn('px-2 py-0.5 rounded text-xs font-medium', map[platform] || 'bg-gray-500 text-white')}>
+      <span
+        className={cn(
+          'px-2 py-0.5 rounded text-xs font-medium',
+          map[platform] || 'bg-gray-500 text-white'
+        )}
+      >
         {nameMap[platform] || platform}
       </span>
     );
@@ -360,8 +401,18 @@ export default function Finance() {
 
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
         <div className="relative flex-1 max-w-md">
-          <svg className="w-5 h-5 absolute left-4 top-1/2 -translate-y-1/2 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+          <svg
+            className="w-5 h-5 absolute left-4 top-1/2 -translate-y-1/2 text-gray-400"
+            fill="none"
+            viewBox="0 0 24 24"
+            stroke="currentColor"
+          >
+            <path
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              strokeWidth={2}
+              d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"
+            />
           </svg>
           <input
             type="text"
@@ -398,13 +449,27 @@ export default function Finance() {
           <table className="w-full">
             <thead>
               <tr className="border-b border-gray-100">
-                <th className="text-left py-4 px-4 text-sm font-medium text-gray-500">KOL / 活动</th>
-                <th className="text-right py-4 px-4 text-sm font-medium text-gray-500">总费用</th>
-                <th className="text-center py-4 px-4 text-sm font-medium text-gray-500">付款进度</th>
-                <th className="text-center py-4 px-4 text-sm font-medium text-gray-500">KPI状态</th>
-                <th className="text-center py-4 px-4 text-sm font-medium text-gray-500">合同状态</th>
-                <th className="text-center py-4 px-4 text-sm font-medium text-gray-500">发票</th>
-                <th className="text-center py-4 px-4 text-sm font-medium text-gray-500">操作</th>
+                <th className="text-left py-4 px-4 text-sm font-medium text-gray-500">
+                  KOL / 活动
+                </th>
+                <th className="text-right py-4 px-4 text-sm font-medium text-gray-500">
+                  总费用
+                </th>
+                <th className="text-center py-4 px-4 text-sm font-medium text-gray-500">
+                  付款进度
+                </th>
+                <th className="text-center py-4 px-4 text-sm font-medium text-gray-500">
+                  KPI状态
+                </th>
+                <th className="text-center py-4 px-4 text-sm font-medium text-gray-500">
+                  合同状态
+                </th>
+                <th className="text-center py-4 px-4 text-sm font-medium text-gray-500">
+                  发票
+                </th>
+                <th className="text-center py-4 px-4 text-sm font-medium text-gray-500">
+                  操作
+                </th>
               </tr>
             </thead>
             <tbody>
@@ -412,13 +477,22 @@ export default function Finance() {
                 const depositPaid = cv.depositPayment?.status === 'paid';
                 const finalPaid = cv.finalPayment?.status === 'paid';
                 const finalCanPay = cv.kpiStatus === 'met' && !finalPaid;
-                const finalTooltip = cv.kpiStatus === 'pending'
-                  ? '请先抓取数据'
-                  : cv.kpiStatus === 'not_met'
-                  ? 'KPI未达标，无法支付尾款'
-                  : finalPaid
-                  ? '尾款已支付'
-                  : '';
+
+                const kpiResult = checkKpiMet(cv.invitation.id);
+                let finalTooltip = '';
+                if (cv.kpiStatus === 'pending') {
+                  finalTooltip = '请先抓取数据';
+                } else if (cv.kpiStatus === 'not_met') {
+                  finalTooltip = kpiResult.reason || 'KPI未达标，无法支付尾款';
+                } else if (finalPaid) {
+                  finalTooltip = '尾款已支付';
+                }
+
+                const unpaidIssuable = cv.payments.filter(
+                  (p) =>
+                    p.status === 'paid' &&
+                    !cv.invoices.some((i) => i.paymentId === p.id && i.status === 'issued')
+                );
 
                 return (
                   <motion.tr
@@ -438,37 +512,54 @@ export default function Finance() {
                           </div>
                           <div>
                             <div className="flex items-center gap-2">
-                              <span className="font-medium text-gray-800">{cv.invitation.kolName}</span>
+                              <span className="font-medium text-gray-800">
+                                {cv.invitation.kolName}
+                              </span>
                               {getPlatformBadge(cv.platform)}
                             </div>
-                            <span className="text-xs text-gray-500">{cv.invitation.campaignName}</span>
+                            <span className="text-xs text-gray-500">
+                              {cv.invitation.campaignName}
+                            </span>
                           </div>
                         </div>
-                        <span className={cn('inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-medium w-fit ml-11', getStageBadgeClass(cv.stage))}>
+                        <span
+                          className={cn(
+                            'inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-medium w-fit ml-11',
+                            getStageBadgeClass(cv.stage)
+                          )}
+                        >
                           {getStageLabel(cv.stage)}
                         </span>
                       </div>
                     </td>
                     <td className="py-4 px-4 text-right">
-                      <p className="font-display font-bold text-lg text-gray-800">{formatMoney(cv.totalFee)}</p>
+                      <p className="font-display font-bold text-lg text-gray-800">
+                        {formatMoney(cv.totalFee)}
+                      </p>
                     </td>
                     <td className="py-4 px-4">
                       <div className="flex items-center justify-center gap-1.5">
-                        <span className={cn(
-                          'px-2 py-0.5 rounded text-xs font-medium',
-                          depositPaid ? 'bg-success-100 text-success-700' : 'bg-amber-100 text-amber-700'
-                        )}>
+                        <span
+                          className={cn(
+                            'px-2 py-0.5 rounded text-xs font-medium',
+                            depositPaid
+                              ? 'bg-success-100 text-success-700'
+                              : 'bg-amber-100 text-amber-700'
+                          )}
+                        >
                           定金 {depositPaid ? '已付' : '待付'}
                         </span>
                         <ChevronRight className="w-3 h-3 text-gray-400" />
-                        <span className={cn(
-                          'px-2 py-0.5 rounded text-xs font-medium',
-                          finalPaid
-                            ? 'bg-success-100 text-success-700'
-                            : cv.kpiStatus === 'met'
-                            ? 'bg-purple-100 text-purple-700'
-                            : 'bg-gray-100 text-gray-500'
-                        )}>
+                        <span
+                          className={cn(
+                            'px-2 py-0.5 rounded text-xs font-medium',
+                            finalPaid
+                              ? 'bg-success-100 text-success-700'
+                              : cv.kpiStatus === 'met'
+                              ? 'bg-purple-100 text-purple-700'
+                              : 'bg-gray-100 text-gray-500'
+                          )}
+                        >
                           尾款 {finalPaid ? '已付' : cv.kpiStatus === 'met' ? '待付' : '待达标'}
                         </span>
                       </div>
@@ -556,19 +647,16 @@ export default function Finance() {
                             标记尾款已付
                           </button>
                         )}
-                        {cv.payments
-                          .filter((p) => p.status === 'paid' && !issuedInvoices.has(p.id))
-                          .slice(0, 1)
-                          .map((p) => (
-                            <button
-                              key={p.id}
-                              onClick={() => handleIssueInvoice(p.id)}
-                              className="btn-secondary text-xs py-1.5 px-2.5"
-                            >
-                              <Receipt className="w-3.5 h-3.5" />
-                              开票
-                            </button>
-                          ))}
+                        {unpaidIssuable.slice(0, 1).map((p) => (
+                          <button
+                            key={p.id}
+                            onClick={() => handleIssueInvoice(p.id)}
+                            className="btn-secondary text-xs py-1.5 px-2.5"
+                          >
+                            <Receipt className="w-3.5 h-3.5" />
+                            开票
+                          </button>
+                        ))}
                         <button
                           onClick={() => setSelectedCollab(cv)}
                           className="btn-secondary text-xs py-1.5 px-2.5"
@@ -604,7 +692,7 @@ export default function Finance() {
             onMarkPaid={handleMarkPaid}
             onIssueInvoice={handleIssueInvoice}
             onGoReports={() => navigate('/reports')}
-            issuedInvoices={issuedInvoices}
+            checkKpiMet={checkKpiMet}
           />
         )}
       </AnimatePresence>
@@ -619,7 +707,14 @@ interface ModalProps {
   onMarkPaid: (payment: Payment) => void;
   onIssueInvoice: (paymentId: string) => void;
   onGoReports: () => void;
-  issuedInvoices: Set<string>;
+  checkKpiMet: (invitationId: string) => {
+    ok: boolean;
+    reason: string;
+    impressionsRate: number;
+    engagementsRate: number;
+    clicksRate: number;
+    fetched: boolean;
+  };
 }
 
 function CollaborationDetailModal({
@@ -629,11 +724,14 @@ function CollaborationDetailModal({
   onMarkPaid,
   onIssueInvoice,
   onGoReports,
-  issuedInvoices,
+  checkKpiMet,
 }: ModalProps) {
   const depositPaid = cv.depositPayment?.status === 'paid';
   const finalPaid = cv.finalPayment?.status === 'paid';
   const finalCanPay = cv.kpiStatus === 'met' && !finalPaid;
+
+  const isInvoiceIssued = (paymentId: string) =>
+    cv.invoices.some((i) => i.paymentId === paymentId && i.status === 'issued');
 
   const stepState = (idx: number) => {
     const steps = [
@@ -641,13 +739,17 @@ function CollaborationDetailModal({
       depositPaid,
       cv.kpiStatus === 'met',
       finalPaid,
-      cv.payments.every((p) => issuedInvoices.has(p.id)),
+      cv.payments.every((p) => isInvoiceIssued(p.id)),
     ];
     const completedCount = steps.filter(Boolean).length;
     if (idx < completedCount) return 'done';
     if (idx === completedCount) return 'active';
     return 'pending';
   };
+
+  const unpaidIssuable = cv.payments.filter(
+    (p) => p.status === 'paid' && !isInvoiceIssued(p.id)
+  );
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
@@ -685,7 +787,9 @@ function CollaborationDetailModal({
             </div>
             <div>
               <p className="text-xs text-gray-500 mb-1">活动</p>
-              <p className="font-semibold text-gray-800 truncate">{cv.invitation.campaignName}</p>
+              <p className="font-semibold text-gray-800 truncate">
+                {cv.invitation.campaignName}
+              </p>
             </div>
             <div>
               <p className="text-xs text-gray-500 mb-1">总金额</p>
@@ -709,7 +813,11 @@ function CollaborationDetailModal({
                   key: 'contract',
                   title: '合同签署',
                   desc: cv.contractSigned ? '合同已签署' : '等待签署合同',
-                  time: cv.contractSigned ? '已完成' : undefined,
+                  time: cv.contract?.signedAt
+                    ? new Date(cv.contract.signedAt).toLocaleDateString('zh-CN')
+                    : cv.contractSigned
+                    ? '已完成'
+                    : undefined,
                   action: !cv.contractSigned ? (
                     <button
                       onClick={() => onSignContract(cv.invitation.id)}
@@ -746,7 +854,9 @@ function CollaborationDetailModal({
                   key: 'kpi',
                   title: '内容发布与数据抓取',
                   desc: cv.performance
-                    ? `曝光 ${formatNumber(cv.performance.impressions)} · 互动 ${formatNumber(cv.performance.engagements)} · 点击 ${formatNumber(cv.performance.clicks)}`
+                    ? `曝光 ${formatNumber(cv.performance.impressions)} · 互动 ${formatNumber(
+                        cv.performance.engagements
+                      )} · 点击 ${formatNumber(cv.performance.clicks)}`
                     : '等待发布内容',
                   time: cv.performance?.lastFetchedAt
                     ? new Date(cv.performance.lastFetchedAt).toLocaleDateString('zh-CN')
@@ -814,19 +924,16 @@ function CollaborationDetailModal({
                   title: '发票开具',
                   desc: `${cv.invoicesIssued}/${cv.payments.length} 张已开具`,
                   time: undefined,
-                  action: cv.payments
-                    .filter((p) => p.status === 'paid' && !issuedInvoices.has(p.id))
-                    .slice(0, 1)
-                    .map((p) => (
-                      <button
-                        key={p.id}
-                        onClick={() => onIssueInvoice(p.id)}
-                        className="btn-secondary text-xs py-1.5 px-3"
-                      >
-                        <Receipt className="w-3.5 h-3.5" />
-                        开具{p.type === 'deposit' ? '定金' : '尾款'}发票
-                      </button>
-                    ))[0] || null,
+                  action: unpaidIssuable.slice(0, 1).map((p) => (
+                    <button
+                      key={p.id}
+                      onClick={() => onIssueInvoice(p.id)}
+                      className="btn-secondary text-xs py-1.5 px-3"
+                    >
+                      <Receipt className="w-3.5 h-3.5" />
+                      开具{p.type === 'deposit' ? '定金' : '尾款'}发票
+                    </button>
+                  ))[0] || null,
                 },
               ].map((step, idx) => {
                 const state = stepState(idx);
@@ -913,7 +1020,7 @@ function CollaborationDetailModal({
                           {p.type === 'deposit' ? '定金' : '尾款'}
                         </span>
                         <Badge status={p.status} />
-                        {issuedInvoices.has(p.id) && (
+                        {isInvoiceIssued(p.id) && (
                           <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-medium bg-green-100 text-green-700">
                             <Receipt className="w-3 h-3" />
                             已开票
@@ -922,7 +1029,8 @@ function CollaborationDetailModal({
                       </div>
                       <p className="text-xs text-gray-500">
                         到期：{p.dueDate}
-                        {p.paidAt && ` · 支付于 ${new Date(p.paidAt).toLocaleDateString('zh-CN')}`}
+                        {p.paidAt &&
+                          ` · 支付于 ${new Date(p.paidAt).toLocaleDateString('zh-CN')}`}
                       </p>
                     </div>
                   </div>

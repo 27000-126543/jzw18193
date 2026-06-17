@@ -682,27 +682,47 @@ export const useAppStore = create<AppState>()((set, get) => ({
     });
   },
 
-  ensureDataConsistency: () => {
+  ensureDataConsistency: async () => {
     const state = get();
-    const { invitations, payments, contracts, invoices } = state;
+    const { invitations, payments, contracts, invoices, performanceData, campaigns } = state;
 
     const acceptedInvitations = invitations.filter((i) => i.status === 'accepted');
-    acceptedInvitations.forEach(async (invitation) => {
-      const hasPayments = payments.some((p) => p.invitationId === invitation.id);
-      if (hasPayments) {
-        const hasContract = contracts.some((c) => c.invitationId === invitation.id);
-        if (!hasContract) {
-          await get().createContractForInvitation(invitation.id);
-        }
+    for (const invitation of acceptedInvitations) {
+      const hasContract = contracts.some((c) => c.invitationId === invitation.id);
+      if (!hasContract) {
+        await get().createContractForInvitation(invitation.id);
       }
-    });
+    }
+
+    for (const invitation of acceptedInvitations) {
+      const hasPerformance = performanceData.some((p) => p.contentId === invitation.id);
+      if (!hasPerformance) {
+        const campaign = campaigns.find((c) => c.id === invitation.campaignId);
+        await get().addPerformanceRecord({
+          contentId: invitation.id,
+          kolName: invitation.kolName,
+          campaignName: invitation.campaignName,
+          impressions: 0,
+          engagements: 0,
+          clicks: 0,
+          conversionRate: 0,
+          roi: 0,
+          targetImpressions: campaign?.kpi.targetImpressions,
+          targetEngagements: campaign?.kpi.targetEngagements,
+          targetClicks: campaign?.kpi.targetClicks,
+          fetchStatus: 'idle',
+        });
+      }
+    }
 
     const paidPayments = payments.filter((p) => p.status === 'paid');
-    paidPayments.forEach(async (payment) => {
+    for (const payment of paidPayments) {
       const hasInvoice = invoices.some((i) => i.paymentId === payment.id);
       if (!hasInvoice) {
         await get().createInvoiceForPayment(payment.id);
       }
-    });
+    }
   },
 }));
+
+useAppStore.getState().ensureDataConsistency();
