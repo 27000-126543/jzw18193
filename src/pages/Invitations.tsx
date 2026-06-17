@@ -15,6 +15,7 @@ import {
   MessageCircle,
   Calendar,
   DollarSign,
+  Loader2,
 } from 'lucide-react';
 import type { InvitationStatus } from '@/types';
 
@@ -31,6 +32,7 @@ export default function Invitations() {
   const updateInvitationStatus = useAppStore((state) => state.updateInvitationStatus);
   const [statusFilter, setStatusFilter] = useState<InvitationStatus | 'all'>('all');
   const [searchQuery, setSearchQuery] = useState('');
+  const [loadingId, setLoadingId] = useState<string | null>(null);
 
   const filteredInvitations = useMemo(() => {
     return invitations.filter((inv) => {
@@ -57,11 +59,23 @@ export default function Invitations() {
   };
 
   const handleAccept = async (id: string) => {
-    await updateInvitationStatus(id, 'accepted');
+    setLoadingId(id);
+    try {
+      await updateInvitationStatus(id, 'accepted');
+      alert('已确认合作！');
+    } finally {
+      setLoadingId(null);
+    }
   };
 
   const handleReject = async (id: string) => {
-    await updateInvitationStatus(id, 'rejected');
+    setLoadingId(id);
+    try {
+      await updateInvitationStatus(id, 'rejected');
+      alert('已拒绝邀约');
+    } finally {
+      setLoadingId(null);
+    }
   };
 
   const stats = useMemo(() => ({
@@ -210,17 +224,27 @@ export default function Invitations() {
                   {invitation.status === 'pending' && (
                     <>
                       <button
-                        onClick={() => handleAccept(invitation.id)}
-                        className="btn-secondary text-sm py-2 px-3"
+                        onClick={() => handleReject(invitation.id)}
+                        disabled={loadingId === invitation.id}
+                        className="btn-secondary text-sm py-2 px-3 disabled:opacity-50 disabled:cursor-not-allowed"
                       >
-                        <XCircle className="w-4 h-4" />
+                        {loadingId === invitation.id ? (
+                          <Loader2 className="w-4 h-4 animate-spin" />
+                        ) : (
+                          <XCircle className="w-4 h-4" />
+                        )}
                         拒绝
                       </button>
                       <button
                         onClick={() => handleAccept(invitation.id)}
-                        className="btn-primary text-sm py-2 px-3"
+                        disabled={loadingId === invitation.id}
+                        className="btn-primary text-sm py-2 px-3 disabled:opacity-50 disabled:cursor-not-allowed"
                       >
-                        <CheckCircle className="w-4 h-4" />
+                        {loadingId === invitation.id ? (
+                          <Loader2 className="w-4 h-4 animate-spin" />
+                        ) : (
+                          <CheckCircle className="w-4 h-4" />
+                        )}
                         确认合作
                       </button>
                     </>

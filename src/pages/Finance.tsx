@@ -1,4 +1,4 @@
-import { useState, useMemo } from 'react';
+import { useState, useMemo, useCallback } from 'react';
 import { useShallow } from 'zustand/shallow';
 import { motion } from 'framer-motion';
 import { useAppStore } from '@/store/useAppStore';
@@ -15,8 +15,10 @@ import {
   FileText,
   ChevronRight,
   Calendar,
+  Target,
+  AlertCircle,
 } from 'lucide-react';
-import type { PaymentStatus } from '@/types';
+import type { PaymentStatus, Payment } from '@/types';
 
 const statusFilters: { value: PaymentStatus | 'all'; label: string }[] = [
   { value: 'all', label: '全部' },
@@ -26,8 +28,11 @@ const statusFilters: { value: PaymentStatus | 'all'; label: string }[] = [
 ];
 
 export default function Finance() {
-  const payments = useAppStore(useShallow((state) => state.payments));
-  const markPaymentPaid = useAppStore((state) => state.markPaymentPaid);
+  const { payments, markPaymentPaid, getPerformanceByInvitationId } = useAppStore(useShallow((state) => ({
+    payments: state.payments,
+    markPaymentPaid: state.markPaymentPaid,
+    getPerformanceByInvitationId: state.getPerformanceByInvitationId,
+  })));
   const [statusFilter, setStatusFilter] = useState<PaymentStatus | 'all'>('all');
 
   const filteredPayments = useMemo(() => {
@@ -55,9 +60,22 @@ export default function Finance() {
     overdue: payments.filter((p) => p.status === 'overdue').length,
   }), [milestoneStats, payments]);
 
-  const handleMarkPaid = async (id: string) => {
-    await markPaymentPaid(id);
-  };
+  const handleMarkPaid = useCallback(async (id: string, payment: Payment) => {
+    try {
+      if (payment.type === 'final') {
+        const perf = getPerformanceByInvitationId(payment.invitationId);
+        if (perf && (!perf.lastFetchedAt || perf.fetchStatus !== 'success')) {
+          if (!confirm('注意：该笔尾款对应的效果数据尚未抓取，数据未达标的情况下将无法支付尾款。建议先抓取数据再操作，确认继续吗？')) {
+            return;
+          }
+        }
+      }
+      await markPaymentPaid(id);
+      alert(payment.type === 'deposit' ? '定金已标记为已支付！' : '尾款已标记为已支付！');
+    } catch (e: any) {
+      alert('操作失败：' + e.message);
+    }
+  }, [markPaymentPaid, getPerformanceByInvitationId]);
 
   return (
     <div className="space-y-6">
@@ -161,71 +179,111 @@ export default function Finance() {
           </div>
 
           <div className="space-y-4">
-            {filteredPayments.map((payment, index) => (
-              <motion.div
-                key={payment.id}
-                initial={{ opacity: 0, y: 20 }}
-                animate={{ opacity: 1, y: 0 }}
-                transition={{ delay: index * 0.05 }}
-                className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 p-4 bg-gray-50 rounded-xl"
-              >
-                <div className="flex items-center gap-4">
-                  <div
-                    className={`w-12 h-12 rounded-xl flex items-center justify-center ${
-                      payment.type === 'deposit'
-                        ? 'bg-blue-100 text-blue-600'
-                        : 'bg-purple-100 text-purple-600'
-                    }`}
-                  >
-                    <DollarSign className="w-6 h-6" />
-                  </div>
-                  <div>
-                    <div className="flex items-center gap-2 mb-1">
-                      <h4 className="font-medium text-gray-800">
-                        {payment.kolName}
-                      </h4>
-                      <span
-                        className={`px-2 py-0.5 rounded text-xs font-medium ${
-                          payment.type === 'deposit'
-                            ? 'bg-blue-100 text-blue-700'
-                            : 'bg-purple-100 text-purple-700'
-                        }`}
-                      >
-                        {payment.type === 'deposit' ? '定金' : '尾款'}
-                      </span>
-                    </div>
-                    <p className="text-sm text-gray-500">{payment.campaignName}</p>
-                  </div>
-                </div>
+            {filteredPayments.map((payment, index) => {
+              const perf = payment.type === 'final' ? getPerformanceByInvitationId(payment.invitationId) : undefined;
+              let kpiStatus: 'met' | 'not_met' | 'pending' | null = null;
+              let kpiDisabled = false;
+              let kpiTooltip = '';
 
-                <div className="flex flex-col sm:flex-row sm:items-center gap-4">
-                  <div className="text-right">
-                    <p className="font-display font-bold text-xl text-gray-800">
-                      {formatMoney(payment.amount)}
-                    </p>
-                    <div className="flex items-center gap-1 text-xs text-gray-500">
-                      <Calendar className="w-3 h-3" />
-                      <span>
-                        {payment.type === 'deposit' ? '签约' : '发布'}后{' '}
-                        {payment.dueDate}
-                      </span>
+              if (payment.type === 'final' && perf) {
+                if (perf.lastFetchedAt) {
+                  const kpiMet = (perf.impressions >= (perf.targetImpressions || 0)) && (perf.engagements >= (perf.targetEngagements || 0));
+                  kpiStatus = kpiMet ? 'met' : 'not_met';
+                  if (!kpiMet && payment.status === 'pending') {
+                    kpiDisabled = true;
+                    kpiTooltip = 'KPI未达标，无法支付尾款';
+                  }
+                } else {
+                  kpiStatus = 'pending';
+                }
+              }
+
+              return (
+                <motion.div
+                  key={payment.id}
+                  initial={{ opacity: 0, y: 20 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  transition={{ delay: index * 0.05 }}
+                  className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 p-4 bg-gray-50 rounded-xl"
+                >
+                  <div className="flex items-center gap-4">
+                    <div
+                      className={`w-12 h-12 rounded-xl flex items-center justify-center ${
+                        payment.type === 'deposit'
+                          ? 'bg-blue-100 text-blue-600'
+                          : 'bg-purple-100 text-purple-600'
+                      }`}
+                    >
+                      <DollarSign className="w-6 h-6" />
+                    </div>
+                    <div>
+                      <div className="flex items-center gap-2 mb-1">
+                        <h4 className="font-medium text-gray-800">
+                          {payment.kolName}
+                        </h4>
+                        <span
+                          className={`px-2 py-0.5 rounded text-xs font-medium ${
+                            payment.type === 'deposit'
+                              ? 'bg-blue-100 text-blue-700'
+                              : 'bg-purple-100 text-purple-700'
+                          }`}
+                        >
+                          {payment.type === 'deposit' ? '定金' : '尾款'}
+                        </span>
+                        {payment.type === 'final' && kpiStatus && (
+                          kpiStatus === 'met' ? (
+                            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-medium bg-success-100 text-success-700">
+                              <Target className="w-3 h-3" />
+                              KPI达标
+                            </span>
+                          ) : kpiStatus === 'not_met' ? (
+                            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-medium bg-danger-100 text-danger-700">
+                              <AlertCircle className="w-3 h-3" />
+                              KPI未达标
+                            </span>
+                          ) : (
+                            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-medium bg-gray-100 text-gray-500">
+                              <Clock className="w-3 h-3" />
+                              待抓取数据
+                            </span>
+                          )
+                        )}
+                      </div>
+                      <p className="text-sm text-gray-500">{payment.campaignName}</p>
                     </div>
                   </div>
 
-                  <div className="flex items-center gap-2">
-                    <Badge status={payment.status} />
-                    {payment.status === 'pending' && (
-                      <button
-                        onClick={() => handleMarkPaid(payment.id)}
-                        className="btn-primary text-sm py-1.5 px-3"
-                      >
-                        标记已付
-                      </button>
-                    )}
+                  <div className="flex flex-col sm:flex-row sm:items-center gap-4">
+                    <div className="text-right">
+                      <p className="font-display font-bold text-xl text-gray-800">
+                        {formatMoney(payment.amount)}
+                      </p>
+                      <div className="flex items-center gap-1 text-xs text-gray-500">
+                        <Calendar className="w-3 h-3" />
+                        <span>
+                          {payment.type === 'deposit' ? '签约' : '发布'}后{' '}
+                          {payment.dueDate}
+                        </span>
+                      </div>
+                    </div>
+
+                    <div className="flex items-center gap-2">
+                      <Badge status={payment.status} />
+                      {payment.status === 'pending' && (
+                        <button
+                          onClick={() => handleMarkPaid(payment.id, payment)}
+                          disabled={kpiDisabled}
+                          title={kpiTooltip || undefined}
+                          className="btn-primary text-sm py-1.5 px-3 disabled:opacity-50 disabled:cursor-not-allowed"
+                        >
+                          标记已付
+                        </button>
+                      )}
+                    </div>
                   </div>
-                </div>
-              </motion.div>
-            ))}
+                </motion.div>
+              );
+            })}
           </div>
         </Card>
 
@@ -252,8 +310,14 @@ export default function Finance() {
                   2
                 </div>
                 <div>
-                  <p className="font-medium text-gray-800 text-sm">尾款支付</p>
-                  <p className="text-xs text-gray-600">
+                  <p className="font-medium text-gray-800 text-sm flex items-center gap-2">
+                    尾款支付
+                    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-medium bg-danger-100 text-danger-700">
+                      <AlertCircle className="w-3 h-3" />
+                      需KPI达标
+                    </span>
+                  </p>
+                  <p className="text-xs text-gray-600 mt-1">
                     内容发布且数据达标后支付70%
                   </p>
                 </div>

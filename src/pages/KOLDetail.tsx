@@ -1,10 +1,11 @@
 import { useParams, useNavigate } from 'react-router-dom';
-import { useMemo } from 'react';
+import { useMemo, useState } from 'react';
 import { motion } from 'framer-motion';
 import { useAppStore } from '@/store/useAppStore';
 import { formatMoney, formatNumber, formatPercent } from '@/utils';
 import Card from '@/components/ui/Card';
 import PlatformBadge from '@/components/ui/PlatformBadge';
+import SendInvitationModal from '@/components/features/SendInvitationModal';
 import {
   ArrowLeft,
   Send,
@@ -17,6 +18,7 @@ import {
   Calendar,
   MessageSquare,
 } from 'lucide-react';
+import type { KOL } from '@/types';
 
 export default function KOLDetail() {
   const { id } = useParams<{ id: string }>();
@@ -26,6 +28,7 @@ export default function KOLDetail() {
 
   const kol = id ? getKolById(id) : undefined;
   const history = id ? getHistoryByKolId(id) : [];
+  const [invitationModalOpen, setInvitationModalOpen] = useState(false);
 
   if (!kol) {
     return (
@@ -118,7 +121,7 @@ export default function KOLDetail() {
               </p>
             </div>
             <button
-              onClick={() => navigate('/invitations')}
+              onClick={() => setInvitationModalOpen(true)}
               className="btn-accent w-full"
             >
               <Send className="w-4 h-4" />
@@ -298,6 +301,14 @@ export default function KOLDetail() {
           </div>
         </Card>
       )}
+      <SendInvitationModal
+        open={invitationModalOpen}
+        kol={kol as KOL | null}
+        onClose={() => setInvitationModalOpen(false)}
+        onSuccess={() => {
+          alert('邀约发送成功！请到"邀约管理"中查看');
+        }}
+      />
     </div>
   );
 }

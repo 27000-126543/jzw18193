@@ -85,6 +85,8 @@ export interface PerformanceData {
   targetImpressions?: number;
   targetEngagements?: number;
   targetClicks?: number;
+  fetchStatus?: 'idle' | 'fetching' | 'success' | 'failed';
+  lastFetchedAt?: string;
 }
 
 export interface Payment {

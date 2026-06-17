@@ -6,6 +6,7 @@ import { formatNumber, formatMoney, formatPercent, cn } from '@/utils';
 import Card from '@/components/ui/Card';
 import Badge from '@/components/ui/Badge';
 import PlatformBadge from '@/components/ui/PlatformBadge';
+import SendInvitationModal from '@/components/features/SendInvitationModal';
 import {
   Search,
   Filter,
@@ -18,7 +19,7 @@ import {
   X,
 } from 'lucide-react';
 import { categoriesList, platformsList } from '@/mocks/data';
-import type { Platform, FilterOptions } from '@/types';
+import type { Platform, FilterOptions, KOL } from '@/types';
 import { useShallow } from 'zustand/shallow';
 
 export default function KOLSearch() {
@@ -30,6 +31,8 @@ export default function KOLSearch() {
   const kols = useMemo(() => getFilteredKOLs(), [getFilteredKOLs, kolsAll, filters]);
   const [showFilters, setShowFilters] = useState(true);
   const [selectedCategory, setSelectedCategory] = useState<string[]>([]);
+  const [invitationModalOpen, setInvitationModalOpen] = useState(false);
+  const [selectedKolForInvitation, setSelectedKolForInvitation] = useState<KOL | null>(null);
 
   const filteredKOLs = useMemo(() => {
     let result = [...kols];
@@ -367,7 +370,8 @@ export default function KOLSearch() {
                       className="btn-accent text-sm py-2 px-3"
                       onClick={(e) => {
                         e.stopPropagation();
-                        navigate('/invitations');
+                        setSelectedKolForInvitation(kol);
+                        setInvitationModalOpen(true);
                       }}
                     >
                       <Send className="w-4 h-4" />
@@ -399,6 +403,14 @@ export default function KOLSearch() {
           )}
         </div>
       </div>
+      <SendInvitationModal
+        open={invitationModalOpen}
+        kol={selectedKolForInvitation}
+        onClose={() => setInvitationModalOpen(false)}
+        onSuccess={() => {
+          alert('邀约发送成功！请到"邀约管理"中查看');
+        }}
+      />
     </div>
   );
 }
